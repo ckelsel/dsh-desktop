@@ -1,3 +1,5 @@
 * text=auto eol=lf
 patches/*.patch text eol=lf whitespace=-space-before-tab,-blank-at-eol
 .yarn/patches/*.patch text eol=lf whitespace=-space-before-tab,-blank-at-eol
+# Third-party TradingView Advanced Charts build: keep bytes as published.
+vendor/tradingview/** binary

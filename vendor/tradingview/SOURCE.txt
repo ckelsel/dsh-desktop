@@ -1,0 +1,21 @@
+TradingView Advanced Charts (Charting Library)
+
+Version:  CL v29.4.0 (internal id 29ac1aba6675f14818f3a5a9da75fa91c79107d0 @ 2025-06-25)
+Contents: charting_library/ exactly as published by TradingView (no local edits).
+Copied:   2026-11-11 from smart_trader/trading_view/charting_library.
+
+Licence
+  The library is proprietary TradingView software distributed under the
+  TradingView Advanced Charts licence agreement. It is NOT covered by this
+  repository's LICENSE and must not be redistributed publicly. Keep this
+  repository private unless TradingView's terms allow otherwise.
+
+Runtime
+  The Desktop main process serves this folder same-origin at
+  dsh-app://app/charting_library/ (see dsh-plugin-desktop-beta/src/tradingview-assets.ts).
+  Set DSH_TRADINGVIEW_DIR to a directory containing charting_library/ to use
+  another copy.
+
+Packaging
+  Not yet part of the packaged payload: packaged builds show the
+  "chart library not found" placeholder until it is added.
