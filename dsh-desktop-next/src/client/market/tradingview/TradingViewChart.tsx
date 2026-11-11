@@ -52,8 +52,9 @@ export function chartTimezone(): string {
  */
 const TV_GREEN = '#089981'
 const TV_RED = '#F23645'
-const TV_GREEN_VOLUME = 'rgba(8, 153, 129, 0.5)'
-const TV_RED_VOLUME = 'rgba(242, 54, 69, 0.5)'
+/** The Volume study's default palette (`color-minty-green-400`, `color-ripe-red-400`), drawn at its 50% transparency. */
+const TV_GREEN_VOLUME = '#22AB94'
+const TV_RED_VOLUME = '#F7525F'
 
 type UpColor = 'green' | 'red'
 
@@ -82,14 +83,25 @@ function priceOverrides(upColor: UpColor): TvOverrides {
   }
 }
 
-const volumeOverrides = (upColor: UpColor): Record<string, string> => ({
-  'volume.volume.color.0': upColor === 'green' ? TV_RED_VOLUME : TV_GREEN_VOLUME,
-  'volume.volume.color.1': upColor === 'green' ? TV_GREEN_VOLUME : TV_RED_VOLUME,
-})
+/** Volume palette: index 0 colours falling bars, index 1 growing ones. */
+const volumePalette = (upColor: UpColor): [string, string] =>
+  upColor === 'green' ? [TV_RED_VOLUME, TV_GREEN_VOLUME] : [TV_GREEN_VOLUME, TV_RED_VOLUME]
+
+/** Defaults for Volume studies the chart adds. */
+function volumeOverrides(upColor: UpColor): TvOverrides {
+  const [falling, growing] = volumePalette(upColor)
+  return { 'volume.volume.color.0': falling, 'volume.volume.color.1': growing }
+}
 
 function applyPriceColors(widget: TvWidget, upColor: UpColor): void {
   widget.applyOverrides(priceOverrides(upColor))
   widget.applyStudiesOverrides(volumeOverrides(upColor))
+  // Studies already on the chart, including ones restored from saved state, keep their own colours.
+  const [falling, growing] = volumePalette(upColor)
+  const chart = widget.activeChart()
+  for (const study of chart.getAllStudies()) {
+    if (study.name === 'Volume') chart.getStudyById(study.id).applyOverrides({ 'volume.color.0': falling, 'volume.color.1': growing })
+  }
 }
 
 function readSaved(): object | undefined {

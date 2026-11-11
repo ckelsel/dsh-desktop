@@ -88,89 +88,15 @@ export interface TvSubscription<F extends (...args: never[]) => void> {
   unsubscribe(obj: object | null, member: F): void
 }
 
-export type TvLineLengthUnit = 'pixel' | 'percentage'
-
-/** `IOrderLineAdapter` (setters chain). */
-export interface TvOrderLine {
-  remove(): void
-  onModify(callback: () => void): this
-  onMove(callback: () => void): this
-  onCancel(callback: () => void): this
-  getPrice(): number
-  setPrice(value: number): this
-  setText(value: string): this
-  setTooltip(value: string): this
-  setModifyTooltip(value: string): this
-  setCancelTooltip(value: string): this
-  setQuantity(value: string): this
-  setEditable(value: boolean): this
-  setCancellable(value: boolean): this
-  setExtendLeft(value: boolean): this
-  setLineLength(value: number, unit?: TvLineLengthUnit): this
-  setLineStyle(value: number): this
-  setLineWidth(value: number): this
-  setBodyFont(value: string): this
-  setQuantityFont(value: string): this
-  setLineColor(value: string): this
-  setBodyBorderColor(value: string): this
-  setBodyBackgroundColor(value: string): this
-  setBodyTextColor(value: string): this
-  setQuantityBorderColor(value: string): this
-  setQuantityBackgroundColor(value: string): this
-  setQuantityTextColor(value: string): this
-  setCancelButtonBorderColor(value: string): this
-  setCancelButtonBackgroundColor(value: string): this
-  setCancelButtonIconColor(value: string): this
+/** `EntityInfo`: a study or drawing on the chart. */
+export interface TvEntityInfo {
+  id: string
+  name: string
 }
 
-/** `IPositionLineAdapter` (setters chain). */
-export interface TvPositionLine {
-  remove(): void
-  onClose(callback: () => void): this
-  onModify(callback: () => void): this
-  onReverse(callback: () => void): this
-  setPrice(value: number): this
-  setText(value: string): this
-  setTooltip(value: string): this
-  setProtectTooltip(value: string): this
-  setCloseTooltip(value: string): this
-  setReverseTooltip(value: string): this
-  setQuantity(value: string): this
-  setExtendLeft(value: boolean): this
-  setLineLength(value: number, unit?: TvLineLengthUnit): this
-  setLineStyle(value: number): this
-  setLineWidth(value: number): this
-  setBodyFont(value: string): this
-  setQuantityFont(value: string): this
-  setLineColor(value: string): this
-  setBodyBorderColor(value: string): this
-  setBodyBackgroundColor(value: string): this
-  setBodyTextColor(value: string): this
-  setQuantityBorderColor(value: string): this
-  setQuantityBackgroundColor(value: string): this
-  setQuantityTextColor(value: string): this
-  setReverseButtonBorderColor(value: string): this
-  setReverseButtonBackgroundColor(value: string): this
-  setReverseButtonIconColor(value: string): this
-  setCloseButtonBorderColor(value: string): this
-  setCloseButtonBackgroundColor(value: string): this
-  setCloseButtonIconColor(value: string): this
-}
-
-/** `IExecutionLineAdapter` (setters chain). */
-export interface TvExecutionShape {
-  remove(): void
-  setPrice(value: number): this
-  /** Unix seconds. */
-  setTime(value: number): this
-  setDirection(value: 'buy' | 'sell'): this
-  setText(value: string): this
-  setTooltip(value: string): this
-  setArrowHeight(value: number): this
-  setArrowSpacing(value: number): this
-  setFont(value: string): this
-  setTextColor(value: string): this
-  setArrowColor(value: string): this
+/** `IStudyApi`. */
+export interface TvStudy {
+  applyOverrides(overrides: TvOverrides): void
 }
 
 /** `IChartWidgetApi`. */
@@ -183,9 +109,8 @@ export interface TvChart {
   setResolution(resolution: string): Promise<boolean>
   symbol(): string
   resolution(): string
-  createOrderLine(): Promise<TvOrderLine>
-  createPositionLine(): Promise<TvPositionLine>
-  createExecutionShape(): Promise<TvExecutionShape>
+  getAllStudies(): TvEntityInfo[]
+  getStudyById(id: string): TvStudy
 }
 
 export type TvOverrides = Record<string, string | number | boolean>
