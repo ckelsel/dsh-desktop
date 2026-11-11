@@ -177,6 +177,7 @@ const CSS = `
   font-size: 12px;
 }
 .dshDesktopSettingsField > span { width: 100%; }
+.dshDesktopSettingsField[data-narrow] { flex: 0 0 120px; }
 .dshDesktopSettingsInput {
   width: 100%;
   min-height: 36px;
@@ -558,6 +559,7 @@ button.dshDesktopSettingsSelect:disabled {
   .dshDesktopSettingsUpdateRow,
   .dshDesktopSettingsToggleRow { align-items: flex-start; }
   .dshDesktopSettingsForm { align-items: stretch; flex-direction: column; }
+  .dshDesktopSettingsField[data-narrow] { flex: 0 0 auto; }
 }
 /* Chromium's Windows and Linux <select> popup takes its fill from the control's
    own background-color and its text from the inherited color. Upstream's

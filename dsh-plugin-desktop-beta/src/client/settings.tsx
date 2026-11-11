@@ -9,6 +9,7 @@ import { NextSettingsAdapter } from './settings-adapter.ts'
 import { DesktopPermissionsSection } from './permissions.tsx'
 import { useDesktopState } from './desktop-state.ts'
 import { NextUpdateSettings } from './updates.tsx'
+import { Mt5Settings } from './mt5-settings.tsx'
 
 export function desktopTranslate(language: string): (key: string) => string {
   const copy = language.startsWith('zh') ? zh : en
@@ -123,6 +124,7 @@ function NextDesktopOptions({ adapter, state, language }: { adapter: NextSetting
         onChange={trading => { void savePreference({ layoutMode: trading ? 'trading' : 'compatibility' }) }}
       />
     </section>
+    <Mt5Settings state={state} language={language} save={patch => adapter.savePreferences(patch)} />
     <section className="dshDesktopSettingsGroup"><h3>{t('后台运行', 'Background operation')}</h3>
       <DesktopSettingsToggleRow
         label={t('关闭窗口后保持后台运行', 'Keep running after closing the window')}

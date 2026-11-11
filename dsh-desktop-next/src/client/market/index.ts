@@ -1,7 +1,8 @@
 /**
  * Market page registration: the market data and trading services, the page labels and styles, and
- * the 'trading.market' entry of the trading workspace frame. Market data is the mock source and
- * the account is demo display data until the MT5 bridge supplies both.
+ * the 'trading.market' entry of the trading workspace frame. In the Desktop window the account comes
+ * from the MT5 bridge; a browser session, which has no bridge, shows the demo account. Market data
+ * is the mock source until the bridge supplies quotes and bars.
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type { HostObservable } from '@deepseek-ai/dsh-client-ui-slots'
@@ -9,6 +10,8 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-theme/client'
 import { createMockMarketData } from './data/mock-market-data.ts'
 import { createMockTrading } from './data/mock-trading.ts'
+import { desktopMt5Bridge } from './data/mt5-bridge.ts'
+import { createMt5Trading } from './data/mt5-trading.ts'
 import { en, zh } from './locales.ts'
 import { MarketPage } from './MarketPage.tsx'
 import type { MarketInjected } from './page-types.ts'
@@ -31,7 +34,12 @@ export function registerMarketPage(ctx: Context): void {
     scope.effect(installMarketStyles, 'market: page styles')
     scope.effect(() => {
       const market = createMockMarketData()
-      const trading = createMockTrading({ market })
+      const demo = createMockTrading({ market })
+      const bridge = desktopMt5Bridge()
+      const trading = bridge === null ? demo : createMt5Trading({
+        bridge, demo,
+        onError: (error) => { console.warn('[desktop-market] MT5 bridge status is unavailable', error) },
+      })
       const quotes = createQuoteHub(market)
       const storage = windowStorage()
       const handle = createMarketStore(readPreferences(storage, market.symbols().map(symbol => symbol.ticker)))

@@ -12,6 +12,7 @@ import { onOpenSettings } from './preload-settings.ts'
 import { createDesktopKeyboardBridge } from './preload-keyboard.ts'
 import { createDesktopBrowserBridge } from './preload-browser.ts'
 import { createDesktopFileActionsBridge, createDesktopFileDragBridge } from './upstream-family-preload.ts'
+import { createMt5Bridge } from './preload-mt5.ts'
 
 if (location.protocol === 'dsh-app:' && location.hostname === 'app') {
   let documentId: string | undefined
@@ -57,6 +58,8 @@ if (location.protocol === 'dsh-app:' && location.hostname === 'app') {
     failed: (message: string) => ipcRenderer.invoke(IPC.failed, message, documentId),
   })
   contextBridge.exposeInMainWorld('__DSH_DIRECTORY_PICKER__', { pick: () => ipcRenderer.invoke(IPC.directory) })
+  // The market page's MT5 account and connection; the main process answers only this document.
+  contextBridge.exposeInMainWorld('dshMt5', createMt5Bridge())
   // The official account plugin opens its Platform pages (top-up, usage) in a native view only when
   // this bridge exists; without it the onboarding's top-up actions stay disabled.
   contextBridge.exposeInMainWorld('dshPlatform', {

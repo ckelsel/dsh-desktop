@@ -1,6 +1,7 @@
 /** Localized names shared by the market page panels and the chart datafeed. */
 import { ASSET_CLASSES, type MarketSymbol } from './data/market-data.ts'
-import type { OrderType, Side, TradeResult } from './data/trading.ts'
+import type { Mt5RejectReason } from '../../mt5/contract.ts'
+import type { OrderType, Side, TradeBlock, TradeResult } from './data/trading.ts'
 import type { DatafeedLabels } from './tradingview/datafeed.ts'
 import { zh } from './locales.ts'
 import type { MarketT, Notice } from './page-types.ts'
@@ -36,6 +37,12 @@ export function orderKind(t: MarketT, side: Side, type: OrderType): string {
   return known(key) ? t(key) : `${sideLabel(t, side)} ${t(`type.${type}`)}`
 }
 
+/** Why trades are refused, as a sentence fragment. */
+export const blockText = (t: MarketT, reason: TradeBlock): string => t(`block.${reason}`)
+
+/** Why the MT5 bridge turned a connection away. */
+export const rejectText = (t: MarketT, reason: Mt5RejectReason): string => t(`reject.${reason}`)
+
 /** The notice a trade request's outcome shows. */
 export function resultNotice(t: MarketT, result: TradeResult): { text: string; tone: Notice['tone'] } {
   switch (result.status) {
@@ -43,6 +50,7 @@ export function resultNotice(t: MarketT, result: TradeResult): { text: string; t
     case 'placed': return { text: t('result.placed', { ticket: result.orderTicket ?? '' }), tone: 'success' }
     case 'rejected': return { text: t('result.rejected', { message: result.message || String(result.retcode ?? '') }), tone: 'error' }
     case 'offline': return { text: t('result.offline'), tone: 'warning' }
+    case 'blocked': return { text: t('result.blocked', { reason: blockText(t, result.blocked ?? 'unsupported') }), tone: 'warning' }
   }
 }
 

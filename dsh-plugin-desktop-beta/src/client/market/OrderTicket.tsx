@@ -2,7 +2,8 @@
  * Order ticket, after the TradingView web order panel: sell and buy prices with the spread, market,
  * limit and stop orders, lots with presets, take profit and stop loss with their distance and
  * expected result, the margin the order needs, and one submit button that names the order. Orders
- * go to the trading provider, which forwards them to MT5; without a terminal it answers `offline`.
+ * go to the trading provider, which forwards them to MT5; the demo account answers `offline`. While
+ * the MT5 connection refuses trades, the button is off and the first reason shows below it.
  */
 import { useEffect, useRef, useState } from 'react'
 import { Minus, Plus } from 'lucide-react'
@@ -12,7 +13,7 @@ import {
   roundLots, type OrderType, type Side, type TradingProvider,
 } from './data/trading.ts'
 import { formatLots, formatMoney, formatNumber, formatPips, formatPrice, formatSigned, parseDecimal, trend } from './format.ts'
-import { describeSymbol, resultNotice } from './labels.ts'
+import { blockText, describeSymbol, resultNotice } from './labels.ts'
 import type { MarketActions, MarketPageProps, MarketT, Notify, UseAccount, UseQuotes } from './page-types.ts'
 
 export interface OrderTicketProps {
@@ -69,6 +70,7 @@ export function OrderTicket({ t, market, trading, useQuotes, useAccount, useStor
   const quote = useQuotes(map => map[ticker])
   const account = useAccount(state => state.account)
   const source = useAccount(state => state.connection.source)
+  const blocked = useAccount(state => state.connection.source === 'mt5' ? state.connection.blocked[0] : undefined)
   const [side, setSide] = useState<Side>('buy')
   const [lots, setLots] = useState(() => symbol === undefined ? String(savedLots) : lotsText(symbol, savedLots))
   const [pending, setPending] = useState('')
@@ -141,7 +143,7 @@ export function OrderTicket({ t, market, trading, useQuotes, useAccount, useStor
     commitLots(Math.min(symbol.maxLots, Math.max(symbol.minLots, current + delta)))
   }
   const submit = (): void => {
-    if (error !== null || sending) return
+    if (error !== null || sending || blocked !== undefined) return
     setSending(true)
     trading.sendOrder({
       ticker: symbol.ticker, side, type, lots: lotsValue, price: isPending ? pendingValue : null,
@@ -244,10 +246,11 @@ export function OrderTicket({ t, market, trading, useQuotes, useAccount, useStor
       </dl>
 
       {(error ?? warning) !== null && <p className="dshMkMessage" data-tone={error === null ? 'warning' : 'error'} role="alert">{error ?? warning}</p>}
-      <button type="button" className="dshMkSubmit" data-side={side} disabled={error !== null || sending} onClick={submit}>
+      <button type="button" className="dshMkSubmit" data-side={side} disabled={error !== null || sending || blocked !== undefined} onClick={submit}>
         {sending ? t('ticket.sending') : submitLabel}
       </button>
       {source === 'mock' && <p className="dshMkHint">{t('ticket.demoHint')}</p>}
+      {blocked !== undefined && <p className="dshMkHint">{t('ticket.blockedHint', { reason: blockText(t, blocked) })}</p>}
     </div>
   </section>
 }

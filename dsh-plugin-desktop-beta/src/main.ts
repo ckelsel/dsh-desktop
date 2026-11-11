@@ -61,6 +61,8 @@ import { deElevateAtStartup, lowIntegrityAtStartup, windowsElevation } from './w
 import { createSandboxLaunchReporter, gpuLaunchFailure, lowIntegrityLaunchDialog, rendererLaunchFailure } from './sandbox-launch.ts'
 import { pickOutsideProgramDirectory, programDirectory, programDirectoryRefusal, refusedProgramDirectoryOverlap, type ProgramDirectoryOverlap, type ProgramDirectoryPurpose } from './program-directory.ts'
 import { startCrashReporting } from './crash-reporting.ts'
+import { Mt5BridgeRuntime } from './mt5/bridge-runtime.ts'
+import { installMt5Ipc } from './mt5/mt5-ipc.ts'
 
 // Below Medium integrity Chromium cannot start its GPU process and ends the launch without a word (#1564).
 const lowIntegrity = lowIntegrityAtStartup({ platform: process.platform, argv: process.argv, executable: process.execPath })
@@ -242,6 +244,11 @@ const runtime = new NextDesktopRuntime({
   },
 })
 if (ownsInstance) runtime.diagnostics.crashDumps = crashDumps
+/** The TCP server the DshBridge EA connects to; independent of the Host, so Host restarts keep the EA connected. */
+const mt5 = new Mt5BridgeRuntime({
+  home, desktopVersion: `DSH Desktop Beta ${version}`, lanAddresses: () => desktopLanAddresses(),
+  log: (event, fields, level = 'info') => { runtime.diagnostics.record({ source: 'mt5', event, level, ...(fields === undefined ? {} : { fields }) }) },
+})
 const platformLogin = new PlatformLoginWindow({
   BrowserWindow, session: partition => session.fromPartition(partition), host: () => runtime.auth,
   parent: () => mainWindow, title: () => t('登录 DeepSeek', 'Sign in to DeepSeek'), dark: () => nativeTheme.shouldUseDarkColors,
@@ -866,6 +873,7 @@ async function performCommand(input: Record<string, unknown>, type: string, sour
           && !await confirmLanAccess()) return
         await runtime.applyPreferences(preferences)
       }
+      await mt5.configure(runtime.preferences, { safeMode: runtime.safeMode })
       for (const window of [mainWindow, shellWindow]) {
         if (window && !window.isDestroyed()) applyWindowMaterial(window, preferences)
       }
@@ -1426,6 +1434,9 @@ async function main(): Promise<void> {
   runtime.recoveryMode = process.argv.includes(RECOVERY_ARGUMENT)
   runtime.initialize()
   runtime.memory.start()
+  installMt5Ipc(mt5, () => mainWindow)
+  void mt5.configure(runtime.preferences, { safeMode: runtime.safeMode })
+    .catch(error => runtime.diagnostics.append(`MT5 bridge did not start: ${String(error)}`, 'warn'))
   void prepareHostEnvironment()
   if (dataLocation.error && !runtime.safeMode) { runtime.recoveryMode = true; runtime.report(dataLocation.error, 'runtime-bootstrap') }
   if (app.isPackaged) {
@@ -1546,6 +1557,7 @@ app.on('before-quit', event => {
   const platformDone = runtime.diagnostics.operation('electron', 'platform.dispose')
   void Promise.all([updates.dispose(installingUpdate).then(() => updatesDone(), error => { updatesDone(error); throw error }), (async () => { try { await recoveryRunner?.dispose(); recoveryDone() } catch (error) { recoveryDone(error); throw error }; await runtime.close() })(),
     platformView.dispose().then(() => platformDone(), error => platformDone(error)),
+    mt5.stop().catch(error => runtime.diagnostics.append(`MT5 bridge stop: ${String(error)}`, 'warn')),
     // A temporary drag export that cannot be removed is recorded, not a failed shutdown.
     disposeFileDrag?.().catch(error => runtime.diagnostics.append(`File drag cleanup: ${String(error)}`, 'warn'))]).then(async () => {
     if (!finish()) return

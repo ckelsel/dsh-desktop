@@ -3,16 +3,17 @@
  * positions, pending orders, order history, deals and the account details in tabs. Row actions
  * (close, modify, cancel) go to the trading provider; selecting a row shows its symbol on the chart.
  * Open, the full account summary sits below the tabs; collapsed, only the tab bar remains, with the
- * equity and floating profit when there is room.
+ * equity and floating profit when there is room. The connection badge stays in the tab bar either way.
  */
 import { useState } from 'react'
 import type { ReactNode } from 'react'
 import { Check, ChevronDown, ChevronUp, Pencil, X } from 'lucide-react'
 import { Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { MarketDataProvider, MarketSymbol } from './data/market-data.ts'
-import { pipsBetween, type AccountInfo, type Brackets, type TradeResult, type TradingProvider, type TradingSnapshot } from './data/trading.ts'
+import { pipsBetween, type AccountInfo, type Brackets, type TradeResult, type TradingConnection, type TradingProvider, type TradingSnapshot } from './data/trading.ts'
+import { ConnectionStatus } from './ConnectionStatus.tsx'
 import { formatLots, formatMoney, formatNumber, formatPips, formatPrice, formatSigned, formatTime, parseDecimal, trend } from './format.ts'
-import { orderKind, resultNotice, sideLabel } from './labels.ts'
+import { blockText, orderKind, resultNotice, sideLabel } from './labels.ts'
 import type { MarketActions, MarketPageProps, MarketT, Notify, UseAccount } from './page-types.ts'
 import type { BottomTab } from './store.ts'
 
@@ -71,14 +72,11 @@ function Money({ value }: { value: number }) {
   return <span data-trend={trend(value)}>{formatSigned(value, 2)}</span>
 }
 
-function Summary({ t, account, source, compact }: { t: MarketT; account: AccountInfo | null; source: TradingSnapshot['connection']; compact: boolean }) {
-  if (account === null) return <span className="dshMkMuted">{t('account.none')}</span>
+function Summary({ t, account, compact }: { t: MarketT; account: AccountInfo | null; compact: boolean }) {
+  if (account === null) return <span className="dshMkMuted dshMkAccountSummary" data-compact={compact || undefined}>{t('account.none')}</span>
   const item = (label: string, value: ReactNode, key: string) => <span key={key} className="dshMkSummaryItem"><span className="dshMkMuted">{label}</span><span className="dshMkNum">{value}</span></span>
   const level = account.marginLevel === null ? '—' : `${formatNumber(account.marginLevel, 2)}%`
   return <div className="dshMkAccountSummary" data-compact={compact || undefined}>
-    {source.source === 'mock'
-      ? <span className="dshMkSource" data-source="mock">{t('account.mock')}</span>
-      : <span className="dshMkSource" data-status={source.status}>{t(`account.${source.status}`)}</span>}
     {!compact && item(t('account.balance'), formatMoney(account.balance), 'balance')}
     {item(t('account.equity'), formatMoney(account.equity), 'equity')}
     {item(t('account.profit'), <Money value={account.profit} />, 'profit')}
@@ -108,7 +106,7 @@ export function TradePanel({ t, market, trading, useAccount, useStore, actions, 
     request().then((result) => {
       const notice = resultNotice(t, result)
       notify(notice.text, notice.tone)
-      if (result.status !== 'offline' && result.status !== 'rejected') setEditing(null)
+      if (result.status === 'done' || result.status === 'placed') setEditing(null)
     }, (reason: unknown) => {
       notify(t('result.rejected', { message: String(reason) }), 'error')
     }).finally(() => { setBusy(null) })
@@ -231,7 +229,7 @@ export function TradePanel({ t, market, trading, useAccount, useStore, actions, 
       case 'orders': return <Table label={t('panel.orders')} columns={orderColumns} rows={orders} rowKey={row => row.ticket} empty={t('empty.orders')} onSelect={select} />
       case 'history': return <Table label={t('panel.history')} columns={historyColumns} rows={history} rowKey={row => row.ticket} empty={t('empty.history')} onSelect={select} />
       case 'deals': return <Table label={t('panel.deals')} columns={dealColumns} rows={deals} rowKey={row => row.ticket} empty={t('empty.deals')} onSelect={select} />
-      case 'account': return <AccountTab t={t} account={account} upColor={upColor} onUpColor={actions.setUpColor} />
+      case 'account': return <AccountTab t={t} account={account} connection={connection} upColor={upColor} onUpColor={actions.setUpColor} />
     }
   }
 
@@ -245,37 +243,55 @@ export function TradePanel({ t, market, trading, useAccount, useStore, actions, 
         </button>)}
       </div>
       <span className="dshMkTradeSpacer" />
-      {!open && <Summary t={t} account={account} source={connection} compact />}
+      {!open && <Summary t={t} account={account} compact />}
+      <ConnectionStatus t={t} connection={connection} trading={trading} notify={notify} />
       <Tooltip label={t(open ? 'panel.collapse' : 'panel.expand')} side="top" delayMs={400}>
         <button type="button" className="dshMkIconButton" aria-label={t(open ? 'panel.collapse' : 'panel.expand')} aria-expanded={open} onClick={() => { actions.toggleBottom() }}>
           {open ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
         </button>
       </Tooltip>
     </div>
-    {open && <Summary t={t} account={account} source={connection} compact={false} />}
+    {open && <Summary t={t} account={account} compact={false} />}
     {open && <div className="dshMkTradeBody" role="tabpanel">{body()}</div>}
   </section>
 }
 
-function AccountTab({ t, account, upColor, onUpColor }: { t: MarketT; account: AccountInfo | null; upColor: 'green' | 'red'; onUpColor(color: 'green' | 'red'): void }) {
+/** A margin call or stop out level in the unit the broker sets it in. */
+const stopLevel = (value: number, mode: 'percent' | 'money', currency: string): string =>
+  mode === 'percent' ? `${formatNumber(value, 2)}%` : `${formatMoney(value)} ${currency}`
+
+function AccountTab({ t, account, connection, upColor, onUpColor }: {
+  t: MarketT
+  account: AccountInfo | null
+  connection: TradingConnection
+  upColor: 'green' | 'red'
+  onUpColor(color: 'green' | 'red'): void
+}) {
   const row = (label: string, value: ReactNode) => <div><dt>{label}</dt><dd>{value}</dd></div>
+  // The demo account stands in without an MT5 account, so the MT5 extras only show for a real link.
+  const mt5 = connection.source === 'mt5' ? connection.mt5?.account ?? null : null
+  const firstBlock = connection.blocked[0]
   return <div className="dshMkAccountTab">
     <section>
       <h3>{t('account.details')}</h3>
       {account === null ? <div className="dshMkEmpty">{t('account.none')}</div> : <dl className="dshMkStats" data-wide="">
         {row(t('account.login'), account.login)}
         {row(t('account.name'), account.name)}
+        {row(t('account.company'), account.company)}
         {row(t('account.server'), account.server)}
         {row(t('account.currency'), account.currency)}
         {row(t('account.leverage'), `1:${account.leverage}`)}
         {row(t('account.accounting'), t(account.accounting === 'hedging' ? 'account.hedging' : 'account.netting'))}
+        {row(t('col.type'), t(`account.${account.mode}`))}
+        {connection.source === 'mt5' && row(t('account.trading'), firstBlock === undefined ? t('account.tradingOk') : blockText(t, firstBlock))}
         {row(t('account.balance'), formatMoney(account.balance))}
         {row(t('account.credit'), formatMoney(account.credit))}
         {row(t('account.equity'), formatMoney(account.equity))}
         {row(t('account.margin'), formatMoney(account.margin))}
         {row(t('account.freeMargin'), formatMoney(account.freeMargin))}
         {row(t('account.marginLevel'), account.marginLevel === null ? '—' : `${formatNumber(account.marginLevel, 2)}%`)}
-        {row(t('col.type'), t(account.mode === 'demo' ? 'account.demo' : 'account.real'))}
+        {mt5 !== null && row(t('account.marginCall'), stopLevel(mt5.marginCall, mt5.marginSoMode, mt5.currency))}
+        {mt5 !== null && row(t('account.stopOut'), stopLevel(mt5.stopOut, mt5.marginSoMode, mt5.currency))}
       </dl>}
     </section>
     <section>

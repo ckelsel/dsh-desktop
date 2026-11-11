@@ -5,6 +5,7 @@
  * the outcome. The Desktop's MT5 bridge implements this interface; until it exists a mock account
  * supplies display data. Money is in the account currency; sizes are lots.
  */
+import type { Mt5BlockReason, Mt5Status } from '../../../mt5/contract.ts'
 import { stepDecimals, type MarketSymbol, type Quote } from './market-data.ts'
 
 export type Side = 'buy' | 'sell'
@@ -22,9 +23,11 @@ export interface AccountInfo {
   login: string
   name: string
   server: string
+  /** The broker. */
+  company: string
   currency: string
   leverage: number
-  mode: 'demo' | 'real'
+  mode: 'demo' | 'contest' | 'real'
   /** Hedging keeps a position per opening deal; netting one position per symbol. */
   accounting: 'hedging' | 'netting'
   balance: number
@@ -97,9 +100,24 @@ export interface Deal {
   time: number
 }
 
+/**
+ * Why a provider refuses new trades: an MT5 bridge reason, or `unsupported` while this build
+ * sends no trade requests to MT5 yet.
+ */
+export type TradeBlock = Mt5BlockReason | 'unsupported'
+
+/** Where the account comes from, whether it is reachable, and whether it takes new trades. */
+export interface TradingConnection {
+  source: 'mt5' | 'mock'
+  status: 'connected' | 'connecting' | 'disconnected'
+  /** Reasons new trades are refused, in reporting order; empty when they may be sent. */
+  blocked: readonly TradeBlock[]
+  /** The MT5 bridge's status; null for the mock account. */
+  mt5: Mt5Status | null
+}
+
 export interface TradingSnapshot {
-  /** Where the account comes from and whether it is reachable. */
-  connection: { source: 'mt5' | 'mock'; status: 'connected' | 'connecting' | 'disconnected' }
+  connection: TradingConnection
   account: AccountInfo | null
   positions: readonly Position[]
   orders: readonly PendingOrder[]
@@ -123,10 +141,13 @@ export interface TradeRequest extends Brackets {
 
 /**
  * Outcome of a request: `done` filled or applied, `placed` a pending order accepted, `rejected`
- * refused by the terminal or the server, `offline` not sent because no terminal is connected.
+ * refused by the terminal or the server, `offline` not sent by the demo account, `blocked` not sent
+ * because of `blocked` (see `TradingConnection.blocked`).
  */
 export interface TradeResult {
-  status: 'done' | 'placed' | 'rejected' | 'offline'
+  status: 'done' | 'placed' | 'rejected' | 'offline' | 'blocked'
+  /** Why a `blocked` request was not sent. */
+  blocked?: TradeBlock
   /** MT5 `TRADE_RETCODE_*` when the terminal answered. */
   retcode: number | null
   /** The terminal's comment, when it gave one. */
@@ -144,6 +165,8 @@ export interface TradingProvider {
   modifyPosition(ticket: string, brackets: Brackets): Promise<TradeResult>
   modifyOrder(ticket: string, changes: { price: number } & Brackets): Promise<TradeResult>
   cancelOrder(ticket: string): Promise<TradeResult>
+  /** Read the account state from the terminal again; absent when there is no terminal. */
+  resync?(): Promise<void>
 }
 
 /** Look up quotes by ticker. */

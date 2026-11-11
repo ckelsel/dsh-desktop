@@ -4,6 +4,7 @@ import type { DesktopHostExit } from './exit-code.ts'
 import type { Features, OnboardingChoices } from './profiles.ts'
 import type { DesktopLanHttpsRuntimeSnapshot } from './lan-https-runtime.ts'
 import type { DesktopPermissions } from './permissions.ts'
+import { MT5_DEFAULT_PORT } from './mt5/contract.ts'
 
 export const NATIVE_ACCESS_HEADER = 'x-dsh-desktop-renderer'
 export const DEFAULT_PROFILE = 'desktop'
@@ -45,6 +46,14 @@ export interface DesktopPreferences {
   scheduleFailed: boolean
   /** Read when the Host starts; a change restarts the Host and reloads the window. */
   layoutMode: DesktopLayoutMode
+  /** Run the MT5 bridge, the TCP server the DshBridge EA connects to; Safe Mode keeps it off. */
+  mt5Enabled: boolean
+  /** `loopback` admits an EA on this machine only; `lan` listens on every interface. */
+  mt5Exposure: 'loopback' | 'lan'
+  /** TCP port the EA dials. */
+  mt5Port: number
+  /** IPv4 addresses an EA may connect from besides loopback, comma separated; empty admits any. */
+  mt5AllowedAddresses: string
 }
 
 export const DEFAULT_PREFERENCES: Readonly<DesktopPreferences> = Object.freeze({
@@ -52,6 +61,7 @@ export const DEFAULT_PREFERENCES: Readonly<DesktopPreferences> = Object.freeze({
   browserAccess: false, networkExposure: 'loopback', port: 0, lanPort: 0, logLevel: 'info', developerLogging: false,
   sidebarFooterCompat: true, sidebarFooterBalanced: true, notifications: true, turnCompleted: true, turnFailed: true, jobCompleted: false, jobFailed: false,
   scheduleCompleted: true, scheduleFailed: true, layoutMode: 'trading',
+  mt5Enabled: true, mt5Exposure: 'loopback', mt5Port: MT5_DEFAULT_PORT, mt5AllowedAddresses: '',
 })
 
 /** Fixed startup defaults matching Beta's disposable Safe Mode settings. */
@@ -60,6 +70,7 @@ export const SAFE_MODE_PREFERENCES: Readonly<DesktopPreferences> = Object.freeze
   browserAccess: false, networkExposure: 'loopback', port: 0, lanPort: 0, logLevel: 'info', developerLogging: false,
   sidebarFooterCompat: true, sidebarFooterBalanced: true, notifications: false, turnCompleted: false, turnFailed: false, jobCompleted: false, jobFailed: false,
   scheduleCompleted: false, scheduleFailed: false, layoutMode: 'compatibility',
+  mt5Enabled: false, mt5Exposure: 'loopback', mt5Port: MT5_DEFAULT_PORT, mt5AllowedAddresses: '',
 })
 
 /** A failure report being written, saved to `file`, or not written. */

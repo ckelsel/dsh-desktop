@@ -1,7 +1,11 @@
 /** Preferences remain readable when no Host or user plugin can start. */
 import { join } from 'node:path'
 import { DEFAULT_PREFERENCES, type DesktopPreferences } from './desktop-contract.ts'
+import { formatAddressList, parseAddressList } from './mt5/addresses.ts'
 import { atomicJson, readPrivateFile } from './private-files.ts'
+
+/** Longest MT5 address allowlist the preferences hold. */
+const MAX_ADDRESS_LIST = 1024
 
 export function parsePreferences(value: unknown): DesktopPreferences {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid Desktop preferences')
@@ -11,12 +15,12 @@ export function parsePreferences(value: unknown): DesktopPreferences {
   // Acrylic and Mica were removed like in the original Desktop. Old preference
   // files stay readable and fail closed to the ordinary opaque Windows window.
   if (source.windowsMaterial === 'acrylic' || source.windowsMaterial === 'mica') result.windowsMaterial = 'off'
-  for (const key of ['developerLogging', 'sidebarFooterCompat', 'sidebarFooterBalanced', 'closeToTray', 'browserAccess', 'notifications', 'turnCompleted', 'turnFailed', 'jobCompleted', 'jobFailed', 'scheduleCompleted', 'scheduleFailed'] as const) {
+  for (const key of ['developerLogging', 'sidebarFooterCompat', 'sidebarFooterBalanced', 'closeToTray', 'browserAccess', 'notifications', 'turnCompleted', 'turnFailed', 'jobCompleted', 'jobFailed', 'scheduleCompleted', 'scheduleFailed', 'mt5Enabled'] as const) {
     if (typeof result[key] !== 'boolean') throw new Error(`Invalid Desktop preference: ${key}`)
   }
   for (const [key, choices] of Object.entries({ macosMaterial: ['off', 'transparent'], windowsMaterial: ['off'],
     linuxMaterial: ['off', 'transparent'], networkExposure: ['loopback', 'lan'], logLevel: ['debug', 'info', 'warn', 'error'],
-    layoutMode: ['compatibility', 'trading'] })) {
+    layoutMode: ['compatibility', 'trading'], mt5Exposure: ['loopback', 'lan'] })) {
     if (!choices.includes(String(result[key as keyof DesktopPreferences]))) throw new Error(`Invalid Desktop preference: ${key}`)
   }
   for (const key of ['port', 'lanPort'] as const) {
@@ -24,9 +28,19 @@ export function parsePreferences(value: unknown): DesktopPreferences {
       throw new Error('Port must be an integer from 0 through 65535')
     }
   }
+  // The EA dials a fixed port, so the operating system may not choose one.
+  if (typeof result.mt5Port !== 'number' || !Number.isInteger(result.mt5Port) || result.mt5Port < 1 || result.mt5Port > 65535) {
+    throw new Error('The MT5 port must be an integer from 1 through 65535')
+  }
+  if (typeof result.mt5AllowedAddresses !== 'string' || result.mt5AllowedAddresses.length > MAX_ADDRESS_LIST) {
+    throw new Error('Invalid Desktop preference: mt5AllowedAddresses')
+  }
+  const allowlist = parseAddressList(result.mt5AllowedAddresses)
+  if (allowlist.invalid.length > 0) throw new Error(`Not an IPv4 address: ${allowlist.invalid.join(', ')}`)
   // The upstream compatibility client paints an opaque background, so a transparent Linux
   // frame stays invisible. Fail closed to the solid frame exactly like the existing Desktop.
-  return { ...result, linuxMaterial: 'off', jobCompleted: false, jobFailed: false } as DesktopPreferences
+  return { ...result, linuxMaterial: 'off', jobCompleted: false, jobFailed: false,
+    mt5AllowedAddresses: formatAddressList(allowlist.addresses) } as DesktopPreferences
 }
 
 export function portsChanged(previous: DesktopPreferences, next: DesktopPreferences): boolean {

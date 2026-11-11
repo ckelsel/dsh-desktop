@@ -1,8 +1,8 @@
 /**
- * Display data standing in for an MT5 account until the terminal bridge exists: a demo account with
- * a few positions, pending orders and closed trades placed around the current mock quotes. Floating
- * profit, margin and equity follow live quotes. Requests are not executed: every request answers
- * `offline`, because no terminal is connected.
+ * Display data standing in for an MT5 account where none is connected (a browser session, or the
+ * Desktop with its MT5 bridge turned off): a demo account with a few positions, pending orders and
+ * closed trades placed around the current mock quotes. Floating profit, margin and equity follow
+ * live quotes. Requests are not executed: every request answers `offline`.
  */
 import { roundPrice, type MarketDataProvider, type MarketSymbol, type Quote } from './market-data.ts'
 import {
@@ -48,6 +48,7 @@ const TRADES: readonly TradeSeed[] = [
   { ticker: 'XAUUSD', side: 'buy', lots: 0.05, open: 3_992.4, close: 4_005.3, commission: -0.35, swap: 0, openAgo: 8 * HOUR, closeAgo: 6 * HOUR },
 ]
 const INITIAL_DEPOSIT = 10_000
+const NONE: readonly never[] = Object.freeze([])
 const round2 = (value: number): number => Math.round(value * 100) / 100
 
 /**
@@ -136,7 +137,7 @@ export function createMockTrading(options: MockTradingOptions): MockTrading {
   balance = round2(balance)
 
   const accountBase: Omit<AccountInfo, 'equity' | 'profit' | 'margin' | 'freeMargin' | 'marginLevel'> = {
-    login: '50123456', name: '演示账户', server: 'MT5-Demo', currency: 'USD', leverage: 100, mode: 'demo', accounting: 'hedging',
+    login: '50123456', name: '演示账户', server: 'MT5-Demo', company: 'Demo', currency: 'USD', leverage: 100, mode: 'demo', accounting: 'hedging',
     balance, credit: 0,
   }
 
@@ -164,7 +165,7 @@ export function createMockTrading(options: MockTradingOptions): MockTrading {
     const equity = round2(accountBase.balance + accountBase.credit + profit + swap)
     margin = round2(margin)
     return {
-      connection: { source: 'mock', status: 'connected' },
+      connection: { source: 'mock', status: 'connected', blocked: NONE, mt5: null },
       account: {
         ...accountBase, equity, profit: round2(profit), margin, freeMargin: round2(equity - margin),
         marginLevel: margin > 0 ? equity / margin * 100 : null,

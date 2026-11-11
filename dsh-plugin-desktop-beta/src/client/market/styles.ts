@@ -1,10 +1,11 @@
 /**
  * Market page styles, injected as a style element: the client build scopes imported `.css` files to
  * the onboarding surface. Surfaces use the app's theme tokens; price colours are TradingView's
- * defaults, and `--mk-up` and `--mk-down` follow the page's price colour setting.
+ * defaults, and `--mk-up` and `--mk-down` follow the page's price colour setting. Layers the page
+ * portals to `document.body` carry `dshMkLayer` for the same tokens.
  */
 const STYLES = `
-.dshMkPage {
+.dshMkPage, .dshMkLayer {
   /* TradingView's default candle colours, shared by the chart and the page. */
   --mk-green: #089981;
   --mk-red: #f23645;
@@ -23,6 +24,11 @@ const STYLES = `
   --mk-line-soft: var(--dsw-alias-border-l1);
   --mk-hover: color-mix(in srgb, var(--dsw-alias-label-primary) 6%, transparent);
   --mk-pressed: color-mix(in srgb, var(--dsw-alias-label-primary) 10%, transparent);
+  --mk-warn: var(--dsw-alias-state-warn-primary, #f59e0b);
+  --mk-warn-text: var(--dsw-alias-state-warn-label, #b45309);
+  --mk-error: var(--dsw-alias-state-error-primary, #ef4444);
+}
+.dshMkPage {
   position: relative;
   display: flex;
   flex: 1 1 auto;
@@ -125,7 +131,8 @@ const STYLES = `
   color: var(--mk-text);
   cursor: pointer;
 }
-.dshMkButton:hover { background: var(--mk-hover); }
+.dshMkButton:hover:not(:disabled) { background: var(--mk-hover); }
+.dshMkButton:disabled { opacity: 0.5; cursor: default; }
 
 .dshMkNotices {
   position: absolute;
@@ -530,9 +537,65 @@ const STYLES = `
 .dshMkAccountSummary:not([data-compact]) { flex: 0 0 auto; flex-wrap: wrap; padding: 6px 12px; border-bottom: 0.5px solid var(--mk-line-soft); }
 @container dsh-trade (max-width: 760px) { .dshMkAccountSummary[data-compact] { display: none; } }
 .dshMkSummaryItem { display: inline-flex; align-items: baseline; gap: 5px; }
-.dshMkSource { padding: 1px 8px; border-radius: 999px; background: var(--mk-pressed); font-size: 11px; font-weight: 600; }
-.dshMkSource[data-source='mock'] { color: var(--dsw-alias-state-warn-label, #b45309); background: color-mix(in srgb, var(--dsw-alias-state-warn-primary, #f59e0b) 16%, transparent); }
-.dshMkSource[data-status='connected'] { color: var(--mk-green); background: color-mix(in srgb, var(--mk-green) 14%, transparent); }
+
+/* Connection badge and its details, which float from document.body. */
+.dshMkConn { display: inline-flex; flex: 0 0 auto; }
+.dshMkConnBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--mk-pressed);
+  color: var(--mk-text-2);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.dshMkConnBadge[data-static] { cursor: default; }
+.dshMkConnBadge::before { content: ''; flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.dshMkConnBadge:not([data-static]):hover { box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 40%, transparent); }
+.dshMkConnBadge[data-tone='mock'], .dshMkConnBadge[data-tone='warning'] { color: var(--mk-warn-text); background: color-mix(in srgb, var(--mk-warn) 16%, transparent); }
+.dshMkConnBadge[data-tone='ok'] { color: var(--mk-green); background: color-mix(in srgb, var(--mk-green) 14%, transparent); }
+.dshMkConnBadge[data-tone='error'] { color: var(--mk-error); background: color-mix(in srgb, var(--mk-error) 12%, transparent); }
+.dshMkConnBadge[data-tone='busy']::before { animation: dshMkPulse 1.2s ease-in-out infinite; }
+@keyframes dshMkPulse { 50% { opacity: 0.25; } }
+@media (prefers-reduced-motion: reduce) { .dshMkConnBadge[data-tone='busy']::before { animation: none; } }
+.dshMkLayer { color: var(--mk-text); font-size: 12px; line-height: 1.45; }
+.dshMkLayer button { font: inherit; }
+.dshMkLayer :focus-visible { outline: 2px solid var(--mk-accent); outline-offset: 1px; }
+.dshMkConnPanel {
+  position: fixed;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-sizing: border-box;
+  width: 320px;
+  max-width: var(--dsh-anchored-max-width, calc(100vw - 16px));
+  max-height: var(--dsh-anchored-max-height, calc(100vh - 16px));
+  overflow: auto;
+  padding: 12px 14px;
+  border: 0.5px solid var(--mk-line);
+  box-shadow: 0 8px 28px rgb(0 0 0 / 18%);
+}
+.dshMkConnHeader { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.dshMkConnPanel h3 { margin: 0; font-size: 13px; font-weight: 600; }
+.dshMkConnPanel h4 { margin: 0 0 4px; color: var(--mk-text-3); font-size: 11px; font-weight: 600; }
+.dshMkConnPanel p { margin: 0; color: var(--mk-text-2); }
+.dshMkConnPanel [data-tone='ok'] { color: var(--mk-green); }
+.dshMkConnPanel [data-tone='warning'] { color: var(--mk-warn-text); }
+.dshMkConnPanel [data-tone='error'] { color: var(--mk-error); }
+.dshMkConnHint { font-size: 11px; }
+.dshMkConnRows { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 12px; margin: 0; }
+.dshMkConnRows > div { display: contents; }
+.dshMkConnRows dt { color: var(--mk-text-3); white-space: nowrap; }
+.dshMkConnRows dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.dshMkConnTrading ul { margin: 0; padding-left: 16px; color: var(--mk-warn-text); }
+.dshMkConnActions { display: flex; justify-content: flex-end; }
 .dshMkTradeBody { flex: 1 1 auto; min-height: 0; overflow: auto; }
 .dshMkTable { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .dshMkTable th {
