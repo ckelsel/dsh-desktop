@@ -58,7 +58,7 @@ export async function main(): Promise<void> {
   delete process.env.DSH_NEXT_TRUSTED_HOSTS
   delete process.env[SYSTEM_PROXY_ENV]
   const packageManager = bundledPnpmInvocation(runtimeDir)
-  const profile = loadNextProfile(projectDir, home, NEXT_PACKAGE, packageManager)
+  const profile = loadNextProfile(projectDir, home, NEXT_PACKAGE, packageManager, preferences.layoutMode)
   const runtimePatch = join(projectDir, 'desktop-next.runtime.patch.json')
   atomicJson(runtimePatch, [
     { id: 'desktop-next-webserver', config: { host: '127.0.0.1', port: preferences.port } },

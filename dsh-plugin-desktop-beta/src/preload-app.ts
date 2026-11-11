@@ -16,6 +16,8 @@ import { createDesktopFileActionsBridge, createDesktopFileDragBridge } from './u
 if (location.protocol === 'dsh-app:' && location.hostname === 'app') {
   let documentId: string | undefined
   let profile = ''
+  // The upstream boot awaits `ready()` before any client plugin applies, so plugins read the final value.
+  let layout: 'compatibility' | 'trading' = 'compatibility'
   markDocumentPlatform()
   syncNativeTheme()
   syncNativeLocale()
@@ -32,6 +34,7 @@ if (location.protocol === 'dsh-app:' && location.hostname === 'app') {
   contextBridge.exposeInMainWorld('desktopNext', {
     renderer: {
       profile: () => profile,
+      layout: () => layout,
       report: (status: unknown) => ipcRenderer.invoke(IPC.rendererStatus, documentId, status),
     },
     permissions: permissionBridge(),
@@ -48,6 +51,7 @@ if (location.protocol === 'dsh-app:' && location.hostname === 'app') {
       const boot = await ipcRenderer.invoke(IPC.boot)
       documentId = boot.documentId
       profile = boot.profile
+      layout = boot.layout === 'trading' ? 'trading' : 'compatibility'
       return boot
     },
     failed: (message: string) => ipcRenderer.invoke(IPC.failed, message, documentId),

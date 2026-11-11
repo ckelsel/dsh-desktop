@@ -112,6 +112,17 @@ function NextDesktopOptions({ adapter, state, language }: { adapter: NextSetting
   return <>
     {failure && <p role="alert" className="dshDesktopSettingsError">{failure}</p>}
     <NextUpdateSettings state={state} language={language} run={command => { void run(() => adapter.command(command)) }} />
+    <section className="dshDesktopSettingsGroup" data-next-layout-mode=""><h3>{t('窗口布局', 'Window layout')}</h3>
+      <DesktopSettingsToggleRow
+        label={t('交易工作台', 'Trading workspace')}
+        description={state.safeMode
+          ? t('安全模式始终使用官方布局。', 'Safe Mode always uses the official layout.')
+          : t('左侧活动栏分别控制会话列表、聊天和行情页，聊天与行情可并排显示；关闭后恢复官方布局。更改后会重启工作环境。', 'An activity bar shows the session list, chat and market page independently, with chat beside the market. Turn off to restore the official layout. Changing it restarts the environment.')}
+        checked={state.preferences.layoutMode === 'trading'}
+        disabled={state.safeMode || busy || state.busy}
+        onChange={trading => { void savePreference({ layoutMode: trading ? 'trading' : 'compatibility' }) }}
+      />
+    </section>
     <section className="dshDesktopSettingsGroup"><h3>{t('后台运行', 'Background operation')}</h3>
       <DesktopSettingsToggleRow
         label={t('关闭窗口后保持后台运行', 'Keep running after closing the window')}

@@ -8,7 +8,7 @@ import { getDshRuntimeVersion, initProfile, loadOverlayPatches, loadProfileDirec
 import { withFileLock } from '@deepseek-ai/dsh-atomic-write'
 import { atomicJson, atomicText, readPrivateFile, removePrivateFileBom } from './private-files.ts'
 import { NextRecovery } from './recovery.ts'
-import { DEFAULT_PROFILE } from './desktop-contract.ts'
+import { DEFAULT_PROFILE, type DesktopLayoutMode } from './desktop-contract.ts'
 import { computerUsePatch } from './profile-computer-use.ts'
 import { pluginMarketPatch } from './profile-plugin-market.ts'
 import { RETIRED_SCHEDULE_BUNDLE, retiredSchedulePatch } from './profile-schedule.ts'
@@ -369,10 +369,22 @@ function retireStaleOnDemandBundles(manager: NextProfiles, name: string, pnpm: P
 }
 
 /**
- * Add product capabilities without replacing the upstream Web presentation.
- * @param pnpm - The bundled pnpm; the Host passes it so that on-demand bundles of another DSH release leave the Profile first.
+ * Overlay rows of the trading layout. The official root layout leaves so this package's client can
+ * provide `layout` and the root frame; the Sidebar and Conversation rows it renders stay mounted.
  */
-export function loadNextProfile(projectDir: string, home: string, installAnchor = NEXT_PACKAGE, pnpm?: ProfilePnpmInvocation): Profile {
+export const TRADING_LAYOUT_PATCHES: readonly { id: string; disabled: boolean }[] = Object.freeze([
+  { id: 'ui-layout', disabled: true },
+  { id: 'ui-sidebar', disabled: false },
+  { id: 'ui-conversation', disabled: false },
+])
+
+/**
+ * Add product capabilities; only the trading layout replaces the upstream root layout.
+ * @param pnpm - The bundled pnpm; the Host passes it so that on-demand bundles of another DSH release leave the Profile first.
+ * @param layoutMode - Layout this Host generation composes; compatibility leaves the upstream Web presentation unchanged.
+ */
+export function loadNextProfile(projectDir: string, home: string, installAnchor = NEXT_PACKAGE, pnpm?: ProfilePnpmInvocation,
+  layoutMode: DesktopLayoutMode = 'compatibility'): Profile {
   const manager = new NextProfiles(home)
   if (manager.directory(basename(projectDir)) !== resolve(projectDir)) throw new Error('Profile must belong to Next home')
   manager.ensure(basename(projectDir))
@@ -397,11 +409,13 @@ export function loadNextProfile(projectDir: string, home: string, installAnchor 
   const profile = loadProfileDirectory('dsh-plugin-desktop-beta', projectDir, installAnchor)
   profile.layers.push({ packageName: 'dsh-plugin-desktop-beta', packageDir: target,
     patchPaths: [NEXT_BUNDLE_PATCH], patches: loadOverlayPatches('dsh-plugin-desktop-beta', NEXT_BUNDLE_PATCH) })
-  const overlay = [
+  const overlay: object[] = [
     { id: 'agents-anywhere-bridge-next', config: {
       dshHome: home,
       ...archivedAgentsAnywhereConfig(installAnchor),
     } },
+    // Rewritten on every start, so returning to compatibility drops these rows again.
+    ...layoutMode === 'trading' ? TRADING_LAYOUT_PATCHES.map(row => ({ ...row })) : [],
   ]
   // Leave AA stateRoot unset to share its default credentials and device binding with Stable/Beta.
   // Rewriting the generated overlay also removes the former per-Profile stateRoot on upgrade.

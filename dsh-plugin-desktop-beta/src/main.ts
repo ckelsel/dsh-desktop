@@ -9,6 +9,7 @@ import { freemem, totalmem } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { app, BrowserWindow, clipboard, crashReporter, dialog, ipcMain, Menu, nativeTheme, net, Notification, protocol, safeStorage, screen, session, shell, type IpcMainInvokeEvent, type MenuItemConstructorOptions, type OpenDialogOptions } from 'electron'
 import { appRequestHeaders, forwardWebRequest, serveWebDocument } from './web-document.ts'
+import { resolveTradingViewRoot, serveTradingViewAsset, TRADINGVIEW_PATH_PREFIX } from './tradingview-assets.ts'
 import { installAppDownloads } from './app-downloads.ts'
 import { installDesktopFileDrag, installFileActions, liveshareOwnerLogin } from './upstream-family.ts'
 import { claimDesktopSingleInstance } from './single-instance.ts'
@@ -23,7 +24,7 @@ import { readSystemProxyConfiguration } from './system-proxy-configuration.ts'
 import { resolveDesktopShellEnvironment, type DesktopShellEnvironmentResolution } from './shell-environment.ts'
 import { ensureUtf8Locale } from './shell-locale.ts'
 import { DEFAULT_PROFILE, NATIVE_ACCESS_HEADER, type DesktopCommand, type DesktopState, type DesktopSettingsPage } from './desktop-contract.ts'
-import { portsChanged, parsePreferences } from './desktop-preferences.ts'
+import { layoutChanged, portsChanged, parsePreferences } from './desktop-preferences.ts'
 import { NativeDesktop, applyWindowMaterial } from './native-desktop.ts'
 import { desktopLanAddresses } from './lan-addresses.ts'
 import { createLanHttpsCertificate, lanHttpsCertificateDiagnostic } from './lan-https-certificate.ts'
@@ -152,6 +153,8 @@ let hostEnvironmentReady: Promise<void> | undefined
 let windowsLanguage = 'en'
 const require = createRequire(NEXT_PACKAGE)
 const webRoot = dirname(require.resolve('@deepseek-ai/dsh-web-frontend/dist/index.html'))
+/** TradingView Advanced Charts, served same-origin for the trading workspace's chart iframe. */
+const tradingViewRoot = resolveTradingViewRoot({ packageRoot: root, resourcesPath: process.resourcesPath })
 const version = (JSON.parse(readFileSync(NEXT_PACKAGE, 'utf8')) as { version: string }).version
 /** The dsh runtime beside this shell; a development tree may hoist it elsewhere, and the packaged check then reports it. */
 let dshVersion: string | undefined
@@ -848,10 +851,12 @@ async function performCommand(input: Record<string, unknown>, type: string, sour
     if (type === 'preferences') {
       if (runtime.safeMode) throw new Error(t('安全模式使用固定的桌面设置。', 'Safe Mode uses fixed desktop settings.'))
       const preferences = parsePreferences(input.preferences)
-      if (portsChanged(runtime.preferences, preferences)) {
-        if (!await confirmed(t('应用访问设置并重启 Host？', 'Apply access settings and restart the Host?'), preferences.browserAccess && preferences.networkExposure === 'lan'
+      const ports = portsChanged(runtime.preferences, preferences)
+      // The Host composes its client layout at startup, so a layout change restarts it like a port change.
+      if (ports || layoutChanged(runtime.preferences, preferences)) {
+        if (!await (ports ? confirmed(t('应用访问设置并重启 Host？', 'Apply access settings and restart the Host?'), preferences.browserAccess && preferences.networkExposure === 'lan'
           ? t('开启后，同一网络中的设备可通过 HTTPS 访问。登录链接可授予访问权限，请仅与可信设备共享。正在运行的任务会被中断。', 'Devices on your network can connect over HTTPS. Login links grant access; share only with trusted devices. Running tasks will be interrupted.')
-          : undefined)) return
+          : undefined) : confirmed(t('切换窗口布局并重启工作环境？', 'Switch the window layout and restart the environment?')))) return
         rendererRecovery?.stop()
         await runtime.restart(() => runtime.writePreferences(preferences))
         if (mainWindow) await reloadMain()
@@ -1241,6 +1246,7 @@ async function main(): Promise<void> {
       return response
     }
     if (url.hostname !== 'app') return new Response(null, { status: 404 })
+    if (url.pathname.startsWith(TRADINGVIEW_PATH_PREFIX)) return serveTradingViewAsset(request, tradingViewRoot)
     if (url.pathname === '/' || url.pathname === '/index.html' || url.pathname.startsWith('/assets/')
       || ['/favicon.svg', '/manifest.webmanifest'].includes(url.pathname)) return serveWebDocument(request, webRoot)
     const auth = runtime.auth
@@ -1256,7 +1262,7 @@ async function main(): Promise<void> {
     assertSender(event, mainWindow, APP_URL)
     if (documentId !== rendererDocumentId || quitting || runtime.recoveryMode) throw new Error('Next document was superseded')
     rendererRecovery?.booted()
-    return { injections, streamBaseUrl: new URL(runtime.auth.url).origin, documentId, profile: runtime.selected }
+    return { injections, streamBaseUrl: new URL(runtime.auth.url).origin, documentId, profile: runtime.selected, layout: runtime.hostLayout }
   })
   ipcMain.handle(IPC.rendererStatus, (event, documentId: unknown, status: unknown) => {
     assertSender(event, mainWindow, APP_URL)

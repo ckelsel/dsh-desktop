@@ -7,7 +7,7 @@ import { NATIVE_ACCESS_HEADER } from './desktop-contract.ts'
 const MIME: Readonly<Record<string, string>> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json',
-  '.woff2': 'font/woff2', '.png': 'image/png', '.ico': 'image/x-icon',
+  '.woff2': 'font/woff2', '.png': 'image/png', '.ico': 'image/x-icon', '.cur': 'image/x-icon',
 }
 /**
  * Pre-Cordis globals injected into the application index.

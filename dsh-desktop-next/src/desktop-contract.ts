@@ -14,6 +14,12 @@ export type DesktopNotification =
 export type NotificationOutcome = DesktopNotification['outcome']
 export type DesktopSettingsPage = 'general' | 'permissions'
 
+/**
+ * Window layout the Host composes at startup: `compatibility` runs the upstream client unmodified;
+ * `trading` disables the official root layout and lets this package own it (activity bar, market page).
+ */
+export type DesktopLayoutMode = 'compatibility' | 'trading'
+
 export interface DesktopPreferences {
   closeToTray: boolean
   macosMaterial: 'off' | 'transparent'
@@ -37,13 +43,15 @@ export interface DesktopPreferences {
   jobFailed: boolean
   scheduleCompleted: boolean
   scheduleFailed: boolean
+  /** Read when the Host starts; a change restarts the Host and reloads the window. */
+  layoutMode: DesktopLayoutMode
 }
 
 export const DEFAULT_PREFERENCES: Readonly<DesktopPreferences> = Object.freeze({
   closeToTray: true, macosMaterial: 'transparent', windowsMaterial: 'off', linuxMaterial: 'off',
   browserAccess: false, networkExposure: 'loopback', port: 0, lanPort: 0, logLevel: 'info', developerLogging: false,
   sidebarFooterCompat: true, sidebarFooterBalanced: true, notifications: true, turnCompleted: true, turnFailed: true, jobCompleted: false, jobFailed: false,
-  scheduleCompleted: true, scheduleFailed: true,
+  scheduleCompleted: true, scheduleFailed: true, layoutMode: 'trading',
 })
 
 /** Fixed startup defaults matching Beta's disposable Safe Mode settings. */
@@ -51,7 +59,7 @@ export const SAFE_MODE_PREFERENCES: Readonly<DesktopPreferences> = Object.freeze
   ...DEFAULT_PREFERENCES, macosMaterial: 'off', windowsMaterial: 'off', linuxMaterial: 'off',
   browserAccess: false, networkExposure: 'loopback', port: 0, lanPort: 0, logLevel: 'info', developerLogging: false,
   sidebarFooterCompat: true, sidebarFooterBalanced: true, notifications: false, turnCompleted: false, turnFailed: false, jobCompleted: false, jobFailed: false,
-  scheduleCompleted: false, scheduleFailed: false,
+  scheduleCompleted: false, scheduleFailed: false, layoutMode: 'compatibility',
 })
 
 /** A failure report being written, saved to `file`, or not written. */
@@ -140,6 +148,8 @@ export interface DesktopBridge {
 /** Metadata-only health reports from the mounted Next client. */
 export interface DesktopRendererBridge {
   profile(): string
+  /** Layout the running Host was composed with; set once the document's boot request resolved. */
+  layout?(): DesktopLayoutMode
   report(status: import('./renderer-recovery.ts').DesktopRendererStatus): Promise<void>
 }
 

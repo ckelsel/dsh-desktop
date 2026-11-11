@@ -22,6 +22,8 @@ import { desktopDirectoryPicker, registerDesktopDirectoryPicker } from './direct
 import { SettingsRequests } from './settings-requests.tsx'
 import type { DesktopSettingsLocaleKey } from '../../../dsh-plugin-desktop/src/client/desktop-settings-locales.ts'
 import { installRendererRecovery } from './renderer-recovery.ts'
+import { applyTradingShell } from './trading-shell/index.ts'
+import { registerMarketPage } from './market/index.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
@@ -30,9 +32,15 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   }
 }
 
-export const inject = ['slots', 'layout', 'locale']
+// `layout` is not a top-level dependency: under the trading layout this plugin provides it.
+export const inject = ['slots', 'locale']
 
 export function apply(ctx: Context): void {
+  // The Host composed this document's layout; the boot carrier reports which one.
+  if (window.desktopNext?.renderer?.layout?.() === 'trading') {
+    applyTradingShell(ctx)
+    registerMarketPage(ctx)
+  }
   ctx.effect(installUiDiagnostics, 'AA and Plugins client lifecycle diagnostics')
   ctx.effect(() => ctx.locale.register('desktop-next', {
     zh: { settings: '桌面设置', language: 'zh', safeMode: '安全模式', safeModeDetail: '当前使用临时环境。退出安全模式并重启后返回原 Profile，临时数据不会保留。', dismiss: '关闭提示', recovery: '打开恢复助手' },
@@ -49,10 +57,13 @@ export function apply(ctx: Context): void {
   if (directoryPicker) registerDesktopDirectoryPicker(ctx, directoryPicker)
   registerDesktopOnboarding(ctx, () => null)
   if (window.desktopNext?.state) {
-    ctx.slots.inject('shell.overlay', () => ctx.slots.register({
-      name: 'shell.overlay', id: 'desktop-next-renderer-health', order: 0,
-      inject: () => ({ ctx }),
-    }, RendererHealth))
+    // Renderer health restores the selected panel, so it waits for whichever plugin provides `layout`.
+    ctx.inject(['layout'], scope => {
+      scope.slots.inject('shell.overlay', () => scope.slots.register({
+        name: 'shell.overlay', id: 'desktop-next-renderer-health', order: 0,
+        inject: () => ({ ctx: scope }),
+      }, RendererHealth))
+    })
     const permissions = window.desktopNext.permissions
     if (permissions) ctx.effect(() => {
       const dispose = ctx.reflect.provide('desktopPermissions', permissions)
@@ -74,7 +85,7 @@ export function apply(ctx: Context): void {
     // offers one, otherwise through the shell's Yarn patch, which maps the ID itself.
     ctx.slots.inject('settings.section', () => ctx.slots.register({
       name: 'settings.section', id: 'desktop', order: 100, locale: 'desktop-next', label: () => t('settings'),
-      inject: () => ({ adapter, openPlugins: () => ctx.layout.selectPanel('plugins' as MainPanelId) }),
+      inject: () => ({ adapter, openPlugins: () => ctx.get('layout')?.selectPanel('plugins' as MainPanelId) }),
     }, DesktopSettings))
     registerDesktopSettingsIcon?.(ctx, 'desktop')
     ctx.slots.inject('settings.action', () => ctx.slots.register({

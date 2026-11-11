@@ -8,7 +8,7 @@ import { DesktopBackendController } from './backend-controller.ts'
 import { DesktopHostExitError, DesktopHostFatalError, DesktopHostProcess, type DesktopPlatformLoginRequest } from './host-process.ts'
 import { DesktopPreferenceStore, parsePreferences } from './desktop-preferences.ts'
 import { DEFAULT_FEATURES, NextProfiles } from './profiles.ts'
-import { DEFAULT_PREFERENCES, DEFAULT_PROFILE, SAFE_MODE_PREFERENCES, type DesktopBrowserLinks, type DesktopFailureReport, type DesktopPreferences, type DesktopState, type DesktopNotification } from './desktop-contract.ts'
+import { DEFAULT_PREFERENCES, DEFAULT_PROFILE, SAFE_MODE_PREFERENCES, type DesktopBrowserLinks, type DesktopFailureReport, type DesktopLayoutMode, type DesktopPreferences, type DesktopState, type DesktopNotification } from './desktop-contract.ts'
 import { DesktopDiagnostics } from './diagnostics.ts'
 import type { DesktopHostExit } from './exit-code.ts'
 import { writeFailureReport } from './failure-report.ts'
@@ -71,6 +71,11 @@ export class NextDesktopRuntime {
   /** A Desktop action that failed while `failure` is shown; the next action clears it. */
   actionFailure = ''
   startup: Promise<void> = Promise.resolve()
+  /**
+   * Layout the current Host generation composed, fixed when that Host was created. It can differ from
+   * `preferences.layoutMode` only until the restart a layout change requires.
+   */
+  hostLayout: DesktopLayoutMode = SAFE_MODE_PREFERENCES.layoutMode
   /** Main-process transport only; never copied into a DesktopState. */
   auth: { url: string; cookie: string; token: string; injections: readonly unknown[] } | undefined
   lan: DesktopLanHttpsRuntime | undefined
@@ -389,6 +394,7 @@ export class NextDesktopRuntime {
     const actualHome = this.safeMode ? this.safeHome! : options.home
     const profile = this.safeMode ? DEFAULT_PROFILE : this.selected
     const effective = this.safeMode ? { ...SAFE_MODE_PREFERENCES } : this.preferences
+    this.hostLayout = effective.layoutMode
     const addresses = options.addresses()
     const token = randomBytes(32).toString('base64url')
     const lan = new DesktopLanHttpsRuntime({ addresses, requestedPort: effective.lanPort,

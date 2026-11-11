@@ -15,7 +15,8 @@ export function parsePreferences(value: unknown): DesktopPreferences {
     if (typeof result[key] !== 'boolean') throw new Error(`Invalid Desktop preference: ${key}`)
   }
   for (const [key, choices] of Object.entries({ macosMaterial: ['off', 'transparent'], windowsMaterial: ['off'],
-    linuxMaterial: ['off', 'transparent'], networkExposure: ['loopback', 'lan'], logLevel: ['debug', 'info', 'warn', 'error'] })) {
+    linuxMaterial: ['off', 'transparent'], networkExposure: ['loopback', 'lan'], logLevel: ['debug', 'info', 'warn', 'error'],
+    layoutMode: ['compatibility', 'trading'] })) {
     if (!choices.includes(String(result[key as keyof DesktopPreferences]))) throw new Error(`Invalid Desktop preference: ${key}`)
   }
   for (const key of ['port', 'lanPort'] as const) {
@@ -30,6 +31,11 @@ export function parsePreferences(value: unknown): DesktopPreferences {
 
 export function portsChanged(previous: DesktopPreferences, next: DesktopPreferences): boolean {
   return (['port', 'lanPort'] as const).some(key => previous[key] !== next[key])
+}
+
+/** The Host composes its client layout at startup, so a layout change needs a Host restart. */
+export function layoutChanged(previous: DesktopPreferences, next: DesktopPreferences): boolean {
+  return previous.layoutMode !== next.layoutMode
 }
 
 export class DesktopPreferenceStore {
