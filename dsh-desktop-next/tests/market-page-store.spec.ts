@@ -127,7 +127,7 @@ describe('demo account', () => {
     expect(before.positions.length).toBe(3)
     expect(before.orders.length).toBe(2)
     const result = await trading.sendOrder({
-      ticker: 'EURUSD', side: 'buy', type: 'market', lots: 0.1, price: null, takeProfit: null, stopLoss: null, deviation: 10, comment: '',
+      ticker: 'EURUSD', side: 'buy', type: 'market', lots: 0.1, price: null, takeProfit: null, stopLoss: null,
     })
     expect(result.status).toBe('offline')
     expect((await trading.closePosition(before.positions[0]!.ticket)).status).toBe('offline')

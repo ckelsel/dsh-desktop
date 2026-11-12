@@ -21,9 +21,9 @@ describe('bridgePhase', () => {
 })
 
 describe('blockReasons', () => {
-  const ready = { phase: 'ready' as const, terminal: terminal(), account: account(), allowRealTrading: false }
+  const ready = { phase: 'ready' as const, terminal: terminal(), account: account(), disclaimerAccepted: true }
 
-  it('opens only for a synced, connected, fully permitted account', () => {
+  it('opens only for a synced, connected, fully permitted account, once the disclaimer is agreed to', () => {
     expect(blockReasons(ready)).toEqual([])
   })
 
@@ -51,13 +51,19 @@ describe('blockReasons', () => {
     expect(blockReasons({
       ...ready,
       terminal: terminal({ connected: false, tradeAllowed: false, eaTradeAllowed: false }),
-      account: account({ tradeAllowed: false, tradeExpert: false, tradeMode: 'real' }),
-    })).toEqual(['broker-disconnected', 'terminal-trade-disabled', 'ea-trade-disabled', 'account-trade-disabled', 'account-expert-disabled', 'real-account-locked'])
+      account: account({ tradeAllowed: false, tradeExpert: false }),
+      disclaimerAccepted: false,
+    })).toEqual(['broker-disconnected', 'terminal-trade-disabled', 'ea-trade-disabled', 'account-trade-disabled', 'account-expert-disabled', 'disclaimer'])
   })
 
-  it('locks real-money accounts unless real trading is allowed, and never demo or contest ones', () => {
-    expect(blockReasons({ ...ready, account: account({ tradeMode: 'real' }) })).toEqual(['real-account-locked'])
-    expect(blockReasons({ ...ready, account: account({ tradeMode: 'real' }), allowRealTrading: true })).toEqual([])
-    expect(blockReasons({ ...ready, account: account({ tradeMode: 'contest' }) })).toEqual([])
+  it('needs the disclaimer agreed to on every account, and then trades real-money accounts like the rest', () => {
+    for (const tradeMode of ['demo', 'contest', 'real'] as const) {
+      expect(blockReasons({ ...ready, account: account({ tradeMode }), disclaimerAccepted: false })).toEqual(['disclaimer'])
+      expect(blockReasons({ ...ready, account: account({ tradeMode }) })).toEqual([])
+    }
+  })
+
+  it('reports no disclaimer before the session is ready', () => {
+    expect(blockReasons({ ...ready, phase: 'listening', disclaimerAccepted: false })).toEqual(['ea-disconnected'])
   })
 })

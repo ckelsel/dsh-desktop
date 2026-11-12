@@ -23,14 +23,21 @@ export const MT5_IPC = {
   tradeEvents: 'dsh-mt5:trade-events',
   historyBars: 'dsh-mt5:history-bars',
   historyTrades: 'dsh-mt5:history-trades',
+  trade: 'dsh-mt5:trade',
+  symbolInfo: 'dsh-mt5:symbol-info',
+  acceptDisclaimer: 'dsh-mt5:accept-disclaimer',
+  withdrawDisclaimer: 'dsh-mt5:withdraw-disclaimer',
 } as const
 
-/** TCP port the bridge listens on unless the user picks another. */
+/** Port the bridge listens on unless the user picks another. */
 export const MT5_DEFAULT_PORT = 19500
 
-/** The oldest EA that serves symbols, quotes, bars, positions, orders and history. An older EA is
- * still connected for the account, and the Desktop asks the user to update it. */
-export const MT5_MIN_EA_VERSION = '1.1.0'
+/** The oldest EA the Desktop works with: 1.2.0 brought protocol 2 (TLS, mutual authentication and
+ * signed trade requests). An older EA speaks plain TCP and fails the TLS handshake. */
+export const MT5_MIN_EA_VERSION = '1.2.0'
+
+/** The trading risk disclaimer's version. A change of substance raises it, and every user agrees again. */
+export const MT5_DISCLAIMER_VERSION = 1
 
 /** Subscriptions the page may hold at once. */
 export const MT5_MAX_QUOTES = 200
@@ -57,15 +64,15 @@ export type Mt5BridgePhase = 'disabled' | 'error' | 'listening' | 'handshaking' 
  * - `ea-trade-disabled`: the EA's own "Allow Algo Trading" option is off.
  * - `account-trade-disabled`: the account cannot trade, for example with the investor password.
  * - `account-expert-disabled`: the broker forbids Expert Advisors on this account.
- * - `real-account-locked`: a real-money account, which this build does not trade.
+ * - `disclaimer`: the user has not agreed to the current trading risk disclaimer.
  */
 export type Mt5BlockReason =
   | 'bridge-disabled' | 'bridge-error' | 'ea-disconnected' | 'syncing'
   | 'broker-disconnected' | 'terminal-trade-disabled' | 'ea-trade-disabled'
-  | 'account-trade-disabled' | 'account-expert-disabled' | 'real-account-locked'
+  | 'account-trade-disabled' | 'account-expert-disabled' | 'disclaimer'
 
-/** Why the bridge turned a connection away. */
-export type Mt5RejectReason = 'address' | 'token' | 'protocol' | 'busy' | 'handshake-timeout' | 'invalid'
+/** Why the bridge turned a connection away. `tls`: the TLS handshake failed, as it does for an EA older than `MT5_MIN_EA_VERSION`. */
+export type Mt5RejectReason = 'tls' | 'token' | 'protocol' | 'busy' | 'handshake-timeout' | 'invalid'
 
 /** The EA session in use. */
 export interface Mt5Peer {
@@ -360,6 +367,86 @@ export interface Mt5TradeEvent {
   symbol: string
 }
 
+/** The account a trade request is meant for; the EA refuses it on any other (`account_mismatch`). */
+export interface Mt5AccountKey {
+  login: string
+  server: string
+}
+
+/**
+ * A trade request from the page. Lots and prices must sit on the symbol's grid, since the EA refuses
+ * rather than rounds them; a null `sl` or `tp` means none. Market deals accept the EA's default slippage.
+ */
+export type Mt5TradeInput =
+  | { type: 'order.place'; account: Mt5AccountKey; symbol: string; side: 'buy' | 'sell'; orderType: 'market' | 'limit' | 'stop'
+    volume: number; price: number | null; sl: number | null; tp: number | null }
+  | { type: 'position.close'; account: Mt5AccountKey; symbol: string; ticket: string; volume: number }
+  | { type: 'position.modify'; account: Mt5AccountKey; symbol: string; ticket: string; sl: number | null; tp: number | null }
+  | { type: 'order.modify'; account: Mt5AccountKey; symbol: string; ticket: string; price: number; sl: number | null; tp: number | null }
+  | { type: 'order.cancel'; account: Mt5AccountKey; symbol: string; ticket: string }
+
+export type Mt5TradeType = Mt5TradeInput['type']
+
+/**
+ * What a trade request came to:
+ * - `done`: executed or applied; `placed`: a pending order placed, or a market order MT5 fills later;
+ * - `rejected`: refused by MT5, the EA or the Desktop, so nothing changed;
+ * - `unknown`: sent, but the outcome is unconfirmed: MT5's positions, orders and history tell what happened;
+ * - `blocked`: not sent, because of `blocked`.
+ */
+export interface Mt5TradeOutcome {
+  status: 'done' | 'placed' | 'rejected' | 'unknown' | 'blocked'
+  /** The request id; null when the Desktop sent nothing. */
+  id: string | null
+  blocked: Mt5BlockReason | null
+  /** `TRADE_RETCODE_*`; 0 when the EA or the Desktop answered without MT5. */
+  retcode: number
+  /**
+   * `sent` for OrderSend's answer and `check` for OrderCheck's, with `retcode`; otherwise why the EA or the
+   * Desktop refused, such as `account_mismatch`, `busy`, `invalid_volume`, `journal_unavailable`, or why the
+   * outcome is unknown: `timeout`, `disconnected`, `interrupted`.
+   */
+  code: string
+  /** MT5's comment, or the reason in English. */
+  message: string
+  order: string | null
+  deal: string | null
+  /** The deal price. */
+  price: number | null
+  /** The lots filled, fewer than requested after a partial fill. */
+  volume: number | null
+  /** The EA had run this id before; this is that run's outcome. */
+  duplicate: boolean
+}
+
+/** A symbol's trade rules (`symbol.info`). Levels are in points; 0 lets the trade server decide. */
+export interface Mt5SymbolInfo {
+  symbol: string
+  digits: number
+  point: number
+  tickSize: number
+  contractSize: number
+  volumeMin: number
+  volumeMax: number
+  volumeStep: number
+  /** Most lots open and pending in one direction; 0 for no limit. */
+  volumeLimit: number
+  /** Least distance of stops and pending prices from the market. */
+  stopsLevel: number
+  /** Distance from the market within which an order or a position's stops may not change. */
+  freezeLevel: number
+  tradeMode: 'full' | 'long_only' | 'short_only' | 'close_only' | 'disabled'
+  /** `SYMBOL_TRADE_EXECUTION_*` without its prefix: `request`, `instant`, `market` or `exchange`. */
+  execution: string
+  /** Order types and stops the symbol takes: `market`, `limit`, `stop`, `stop_limit`, `sl`, `tp`, `close_by`. */
+  orderModes: readonly string[]
+  /** Margin of one lot at the current price, in the account currency; null when MT5 cannot tell. */
+  marginBuy: number | null
+  marginSell: number | null
+  /** The symbol is in a trading session now. */
+  sessionOpen: boolean
+}
+
 /** Public bridge status: everything except the token. */
 export interface Mt5Status {
   phase: Mt5BridgePhase
@@ -376,8 +463,10 @@ export interface Mt5Status {
   syncedAt: number | null
   /** The last connection the bridge turned away, for setup diagnostics. */
   lastRejection: { address: string; reason: Mt5RejectReason; at: number } | null
-  /** The connected EA is older than `MT5_MIN_EA_VERSION`: it serves the account only. */
-  eaOutdated: boolean
+  /** The bridge certificate: the EA reads the same SHA-1 fingerprint (lowercase hex) from the connection. */
+  tls: { fingerprint: string } | null
+  /** The disclaimer version the user agreed to, and when (Unix ms); null until they agree to the current one. */
+  disclaimer: { version: number; acceptedAt: number } | null
 }
 
 /** The renderer API the preload exposes as `window.dshMt5`. */
@@ -403,4 +492,9 @@ export interface Mt5RendererBridge {
   historyBars(request: Mt5HistoryBarsRequest, options?: Mt5HistoryBarsOptions): Promise<Mt5HistoryBars>
   /** Orders and deals with times in [from, to), Unix ms. */
   historyTrades(range: { from: number; to: number }): Promise<Mt5TradeHistory>
+  /** Send a trade request once, never again; the trading gate is checked first. */
+  trade(input: Mt5TradeInput): Promise<Mt5TradeOutcome>
+  symbolInfo(symbol: string): Promise<Mt5SymbolInfo>
+  acceptDisclaimer(): Promise<void>
+  withdrawDisclaimer(): Promise<void>
 }

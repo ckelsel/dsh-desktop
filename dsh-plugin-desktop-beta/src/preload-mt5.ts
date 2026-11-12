@@ -1,8 +1,8 @@
 /** `window.dshMt5`: the market page's channel to the main process MT5 bridge. */
 import { ipcRenderer } from 'electron'
 import {
-  MT5_IPC, type Mt5Bar, type Mt5Catalog, type Mt5HistoryBars, type Mt5RendererBridge, type Mt5Status, type Mt5Tick,
-  type Mt5TradeEvent, type Mt5TradeHistory, type Mt5Trading,
+  MT5_IPC, type Mt5Bar, type Mt5Catalog, type Mt5HistoryBars, type Mt5RendererBridge, type Mt5Status, type Mt5SymbolInfo, type Mt5Tick,
+  type Mt5TradeEvent, type Mt5TradeHistory, type Mt5TradeOutcome, type Mt5Trading,
 } from './mt5/contract.ts'
 
 /** Follow a push channel. @returns the unsubscribe function. */
@@ -30,5 +30,9 @@ export function createMt5Bridge(): Mt5RendererBridge {
     onTradeEvents: listener => listen<readonly Mt5TradeEvent[]>(MT5_IPC.tradeEvents, listener),
     historyBars: (request, options) => ipcRenderer.invoke(MT5_IPC.historyBars, request, options) as Promise<Mt5HistoryBars>,
     historyTrades: range => ipcRenderer.invoke(MT5_IPC.historyTrades, range) as Promise<Mt5TradeHistory>,
+    trade: input => ipcRenderer.invoke(MT5_IPC.trade, input) as Promise<Mt5TradeOutcome>,
+    symbolInfo: symbol => ipcRenderer.invoke(MT5_IPC.symbolInfo, symbol) as Promise<Mt5SymbolInfo>,
+    acceptDisclaimer: () => ipcRenderer.invoke(MT5_IPC.acceptDisclaimer) as Promise<void>,
+    withdrawDisclaimer: () => ipcRenderer.invoke(MT5_IPC.withdrawDisclaimer) as Promise<void>,
   }
 }

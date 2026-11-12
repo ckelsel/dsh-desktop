@@ -41,13 +41,13 @@ const STYLES = `
   line-height: 1.4;
   container: dsh-market / inline-size;
 }
-.dshMkPage[data-up='red'] { --mk-up: var(--mk-red); --mk-down: var(--mk-green); }
+.dshMkPage[data-up='red'], .dshMkLayer [data-up='red'] { --mk-up: var(--mk-red); --mk-down: var(--mk-green); }
 .dshMkPage[data-dragging] { user-select: none; }
 .dshMkPage[data-dragging] iframe { pointer-events: none; }
 .dshMkPage :focus-visible { outline: 2px solid var(--mk-accent); outline-offset: -2px; }
 .dshMkPage button { font: inherit; }
-.dshMkPage [data-trend='up'] { color: var(--mk-up); }
-.dshMkPage [data-trend='down'] { color: var(--mk-down); }
+.dshMkPage [data-trend='up'], .dshMkLayer [data-trend='up'] { color: var(--mk-up); }
+.dshMkPage [data-trend='down'], .dshMkLayer [data-trend='down'] { color: var(--mk-down); }
 .dshMkMuted { color: var(--mk-text-3); }
 .dshMkNum { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dshMkEmpty { padding: 16px; text-align: center; color: var(--mk-text-3); }
@@ -519,6 +519,22 @@ const STYLES = `
 .dshMkSubmit:hover:not(:disabled) { filter: brightness(1.08); }
 .dshMkSubmit:disabled { opacity: 0.45; cursor: default; }
 .dshMkHint { margin: 0; color: var(--mk-text-3); font-size: 11px; text-align: center; }
+/* The account's type beside the submit button; a real-money account stands out. */
+.dshMkSubmitRow { display: flex; align-items: stretch; gap: 6px; }
+.dshMkSubmitRow > .dshMkSubmit { flex: 1 1 auto; min-width: 0; }
+.dshMkAccountTag {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  padding: 0 8px;
+  border: 0.5px solid var(--mk-line);
+  border-radius: 8px;
+  color: var(--mk-text-2);
+  font-size: 12px;
+  font-weight: 600;
+}
+.dshMkAccountTag[data-mode='real'] { border-color: var(--mk-error); color: #fff; background: var(--mk-error); }
+.dshMkHint .dshMkTextButton { margin-left: 4px; }
 
 /* Trading panel. */
 .dshMkTrade { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; container: dsh-trade / inline-size; }
@@ -674,7 +690,29 @@ const STYLES = `
   font: inherit;
   text-align: right;
 }
+.dshMkCellInput[aria-invalid] { border-color: var(--mk-error); }
 .dshMkRowActions { display: inline-flex; align-items: center; gap: 4px; }
+.dshMkSelect {
+  height: 22px;
+  padding: 0 6px;
+  border: 0.5px solid var(--mk-line);
+  border-radius: 4px;
+  background: var(--mk-bg);
+  color: var(--mk-text);
+  font: inherit;
+  font-size: 11px;
+}
+/* Closing several positions. */
+.dshMkCloseDialog[role="dialog"] { width: min(640px, calc(100vw - 48px)); }
+.dshMkCloseIntro { margin: 0 0 8px; font-size: 13px; }
+.dshMkCloseList { max-height: min(48dvh, 400px); overflow-y: auto; overscroll-behavior: contain; }
+.dshMkCloseList .dshMkTable { width: 100%; }
+.dshMkCloseList .dshMkTable tbody tr { cursor: default; }
+.dshMkCloseTotal { display: flex; justify-content: space-between; margin: 8px 0; font-size: 13px; font-variant-numeric: tabular-nums; }
+.dshMkCloseState[data-state='waiting'], .dshMkCloseState[data-state='skipped'] { color: var(--mk-text-3); }
+.dshMkCloseState[data-state='done'] { color: var(--mk-green); }
+.dshMkCloseState[data-state='failed'] { color: var(--mk-error); }
+.dshMkCloseState[data-state='unconfirmed'] { color: var(--mk-warn-text); }
 .dshMkTextButton {
   height: 22px;
   padding: 0 8px;

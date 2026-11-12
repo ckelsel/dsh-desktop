@@ -3,8 +3,8 @@
  * malformed value throws; a subscription beyond the caps keeps its first entries.
  */
 import {
-  MT5_MAX_BAR_STREAMS, MT5_MAX_HISTORY_BARS, MT5_MAX_QUOTES, MT5_TIMEFRAMES,
-  type Mt5BarStream, type Mt5HistoryBarsOptions, type Mt5HistoryBarsRequest, type Mt5Subscription, type Mt5Timeframe,
+  MT5_MAX_BAR_STREAMS, MT5_MAX_HISTORY_BARS, MT5_MAX_QUOTES, MT5_TIMEFRAMES, type Mt5AccountKey, type Mt5BarStream,
+  type Mt5HistoryBarsOptions, type Mt5HistoryBarsRequest, type Mt5Subscription, type Mt5Timeframe, type Mt5TradeInput,
 } from './contract.ts'
 
 const MAX_NAME = 128
@@ -13,6 +13,17 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 const isName = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= MAX_NAME
 const isTimeframe = (value: unknown): value is Mt5Timeframe => typeof value === 'string' && (MT5_TIMEFRAMES as readonly string[]).includes(value)
 const isTime = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+/** Lots and prices: finite and positive. */
+const isAmount = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value > 0
+/** A stop loss or take profit: a price, or null for none. */
+const isLevel = (value: unknown): value is number | null => value === null || isAmount(value)
+const isTicket = (value: unknown): value is string => typeof value === 'string' && /^[1-9]\d{0,19}$/u.test(value)
+const isAccount = (value: unknown): value is Mt5AccountKey => isRecord(value) && typeof value.login === 'string'
+  && /^\d{1,20}$/u.test(value.login) && typeof value.server === 'string' && value.server.length > 0 && value.server.length <= MAX_NAME
+
+function invalidTrade(): never {
+  throw new Error('MT5 bridge: invalid trade request')
+}
 
 /** The page's subscriptions without duplicates, within `MT5_MAX_QUOTES` and `MT5_MAX_BAR_STREAMS`. */
 export function parseSubscriptionInput(value: unknown): Mt5Subscription {
@@ -50,4 +61,40 @@ export function parseHistoryBarsOptions(value: unknown): Mt5HistoryBarsOptions {
 export function parseHistoryRangeInput(value: unknown): { from: number; to: number } {
   if (!isRecord(value) || !isTime(value.from) || !isTime(value.to) || value.to <= value.from) throw new Error('MT5 bridge: invalid history range')
   return { from: value.from, to: value.to }
+}
+
+/** A symbol name. */
+export function parseSymbolInput(value: unknown): string {
+  if (!isName(value)) throw new Error('MT5 bridge: invalid symbol')
+  return value
+}
+
+/** A trade request: a known type with exactly the fields that type takes, each in range. */
+export function parseTradeInput(value: unknown): Mt5TradeInput {
+  if (!isRecord(value)) invalidTrade()
+  const { type, account: key, symbol, ticket, volume, price, sl, tp } = value
+  if (!isAccount(key) || !isName(symbol)) invalidTrade()
+  const account = { login: key.login, server: key.server }
+  if (type === 'order.place') {
+    const { side, orderType } = value
+    if ((side !== 'buy' && side !== 'sell') || (orderType !== 'market' && orderType !== 'limit' && orderType !== 'stop') || !isAmount(volume)
+      || !isLevel(price) || (orderType === 'market') !== (price === null) || !isLevel(sl) || !isLevel(tp)) invalidTrade()
+    return { type, account, symbol, side, orderType, volume, price, sl, tp }
+  }
+  if (!isTicket(ticket)) invalidTrade()
+  switch (type) {
+    case 'position.close':
+      if (!isAmount(volume)) invalidTrade()
+      return { type, account, symbol, ticket, volume }
+    case 'position.modify':
+      if (!isLevel(sl) || !isLevel(tp)) invalidTrade()
+      return { type, account, symbol, ticket, sl, tp }
+    case 'order.modify':
+      if (!isAmount(price) || !isLevel(sl) || !isLevel(tp)) invalidTrade()
+      return { type, account, symbol, ticket, price, sl, tp }
+    case 'order.cancel':
+      return { type, account, symbol, ticket }
+    default:
+      return invalidTrade()
+  }
 }

@@ -8,7 +8,9 @@ import { ipcMain, type BrowserWindow, type IpcMainInvokeEvent, type WebContents 
 import { APP_URL } from '../ipc.ts'
 import type { Mt5BridgeRuntime } from './bridge-runtime.ts'
 import { MT5_IPC, type Mt5Bar, type Mt5Status, type Mt5Tick, type Mt5TradeEvent } from './contract.ts'
-import { parseHistoryBarsInput, parseHistoryBarsOptions, parseHistoryRangeInput, parseSubscriptionInput } from './renderer-input.ts'
+import {
+  parseHistoryBarsInput, parseHistoryBarsOptions, parseHistoryRangeInput, parseSubscriptionInput, parseSymbolInput, parseTradeInput,
+} from './renderer-input.ts'
 
 const STATUS_PUSH_MS = 100
 const TRADING_PUSH_MS = 200
@@ -37,10 +39,12 @@ function throttle(intervalMs: number, push: () => void): { schedule(): void; can
 }
 
 /**
- * Register the bridge's IPC handlers.
+ * Register the bridge's IPC handlers. `setDisclaimer` records the user's agreement to the trading
+ * risk disclaimer, or its withdrawal, in the preferences and applies them to the bridge.
  * @returns a function that removes them.
  */
-export function installMt5Ipc(bridge: Mt5BridgeRuntime, window: () => BrowserWindow | undefined): () => void {
+export function installMt5Ipc(bridge: Mt5BridgeRuntime, window: () => BrowserWindow | undefined,
+  setDisclaimer: (accepted: boolean) => Promise<void>): () => void {
   const target = (): BrowserWindow | undefined => {
     const owner = window()
     return owner === undefined || owner.isDestroyed() || !owner.webContents.mainFrame.url.startsWith(APP_URL) ? undefined : owner
@@ -97,6 +101,10 @@ export function installMt5Ipc(bridge: Mt5BridgeRuntime, window: () => BrowserWin
     return bridge.historyBars(parseHistoryBarsInput(request), parseHistoryBarsOptions(options))
   })
   ipcMain.handle(MT5_IPC.historyTrades, (event, range: unknown) => { assertSender(event); return bridge.historyTrades(parseHistoryRangeInput(range)) })
+  ipcMain.handle(MT5_IPC.trade, (event, input: unknown) => { assertSender(event); return bridge.trade(parseTradeInput(input)) })
+  ipcMain.handle(MT5_IPC.symbolInfo, (event, symbol: unknown) => { assertSender(event); return bridge.symbolInfo(parseSymbolInput(symbol)) })
+  ipcMain.handle(MT5_IPC.acceptDisclaimer, async (event) => { assertSender(event); await setDisclaimer(true) })
+  ipcMain.handle(MT5_IPC.withdrawDisclaimer, async (event) => { assertSender(event); await setDisclaimer(false) })
 
   const status = throttle(STATUS_PUSH_MS, () => { send(MT5_IPC.statusChanged, bridge.status()) })
   const unsubscribeStatus = bridge.subscribe((_status: Mt5Status) => { status.schedule() })
@@ -143,6 +151,7 @@ export function installMt5Ipc(bridge: Mt5BridgeRuntime, window: () => BrowserWin
     market.cancel()
     unwatch()
     for (const channel of [MT5_IPC.status, MT5_IPC.resync, MT5_IPC.request, MT5_IPC.token, MT5_IPC.regenerateToken,
-      MT5_IPC.catalog, MT5_IPC.trading, MT5_IPC.subscribe, MT5_IPC.historyBars, MT5_IPC.historyTrades]) ipcMain.removeHandler(channel)
+      MT5_IPC.catalog, MT5_IPC.trading, MT5_IPC.subscribe, MT5_IPC.historyBars, MT5_IPC.historyTrades, MT5_IPC.trade, MT5_IPC.symbolInfo,
+      MT5_IPC.acceptDisclaimer, MT5_IPC.withdrawDisclaimer]) ipcMain.removeHandler(channel)
   }
 }

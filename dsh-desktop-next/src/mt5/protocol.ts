@@ -1,15 +1,17 @@
 /**
- * Wire format of the MT5 bridge, protocol v1 (`mt5/PROTOCOL.md`): one JSON object per line.
+ * Wire format of the MT5 bridge, protocol 2 (`mt5/PROTOCOL.md`): one JSON object per line, over TLS.
  * Requests carry an `id` that the response repeats; events have none. Every frame and payload the
  * EA sends is validated here before the bridge uses it. Payload fields are snake_case on the wire
  * and camelCase in the Desktop.
  */
 import {
   MT5_TIMEFRAMES, type Mt5Account, type Mt5Bar, type Mt5BarData, type Mt5Deal, type Mt5HistoryOrder, type Mt5Order,
-  type Mt5OrderType, type Mt5PendingType, type Mt5Position, type Mt5Symbol, type Mt5TerminalStatus, type Mt5Tick, type Mt5TradeEvent,
+  type Mt5OrderType, type Mt5PendingType, type Mt5Position, type Mt5Symbol, type Mt5SymbolInfo, type Mt5TerminalStatus, type Mt5Tick,
+  type Mt5TradeEvent, type Mt5TradeInput, type Mt5TradeOutcome,
 } from './contract.ts'
+import { isMt5Hex32 } from './bridge-auth.ts'
 
-export const MT5_PROTOCOL_VERSION = 1
+export const MT5_PROTOCOL_VERSION = 2
 /** Longest frame either side accepts, newline excluded. */
 export const MT5_MAX_LINE_BYTES = 2 * 1024 * 1024
 
@@ -29,15 +31,27 @@ export type Mt5Frame =
   | { kind: 'response'; id: string; ok: false; error: Mt5WireError }
   | { kind: 'event'; type: string; payload: Mt5Payload }
 
-/** The EA's opening request. */
-export interface Mt5Hello {
-  token: string
+/** The EA's opening request: its protocol and nonce. It names no account before it authenticates. */
+export interface Mt5Greeting {
   protocol: number
+  nonce: string
+}
+
+/** The EA's `system.auth`: its proof of the token, and who it is. */
+export interface Mt5Auth {
+  proof: string
+  hello: Mt5Hello
+}
+
+/** Who the authenticated EA is. */
+export interface Mt5Hello {
   eaVersion: string
   terminalBuild: number
   terminalName: string
   login: string
   server: string
+  /** Random id the EA keeps in its files: the same id means the same EA's request journal. */
+  instance: string
 }
 
 /** A frame or payload that breaks the protocol. */
@@ -61,7 +75,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 
 /**
  * Parse one line into a frame.
- * @throws Mt5ProtocolError when the line is not a valid v1 frame.
+ * @throws Mt5ProtocolError when the line is not a valid protocol 2 frame.
  */
 export function parseFrame(line: string): Mt5Frame {
   let value: unknown
@@ -202,32 +216,32 @@ function parseList<T>(values: readonly unknown[], parse: (item: Mt5Payload) => T
   return { items, skipped, firstError }
 }
 
-/**
- * Compare dotted EA versions such as `1.1.0` numerically; a missing or non-numeric part counts as 0.
- * @returns negative, zero or positive, like a sort comparator.
- */
-export function compareVersions(a: string, b: string): number {
-  const parts = (version: string): number[] => version.split('.').map(part => /^\d+$/u.test(part) ? Number(part) : 0)
-  const left = parts(a)
-  const right = parts(b)
-  for (let index = 0; index < Math.max(left.length, right.length); index++) {
-    const difference = (left[index] ?? 0) - (right[index] ?? 0)
-    if (difference !== 0) return difference
-  }
-  return 0
+/** Validate `system.hello`; the caller checks the protocol before the nonce. */
+export function parseGreeting(payload: Mt5Payload): Mt5Greeting {
+  const fields = new Fields(payload, 'system.hello')
+  const protocol = fields.integer('protocol')
+  if (protocol !== MT5_PROTOCOL_VERSION) return { protocol, nonce: '' }
+  const nonce = fields.text('nonce')
+  if (!isMt5Hex32(nonce)) throw new Mt5ProtocolError('system.hello.nonce must be 32 bytes of lowercase hex')
+  return { protocol, nonce }
 }
 
-/** Validate `system.hello`. */
-export function parseHello(payload: Mt5Payload): Mt5Hello {
-  const fields = new Fields(payload, 'system.hello')
+/** Validate `system.auth`; the caller checks the proof. */
+export function parseAuth(payload: Mt5Payload): Mt5Auth {
+  const fields = new Fields(payload, 'system.auth')
+  const proof = fields.text('proof')
+  const instance = fields.text('instance')
+  if (!/^[0-9a-f]{32,64}$/u.test(instance)) throw new Mt5ProtocolError('system.auth.instance must be 16 to 32 bytes of lowercase hex')
   return {
-    token: fields.text('token'),
-    protocol: fields.integer('protocol'),
-    eaVersion: fields.text('ea_version'),
-    terminalBuild: fields.integer('terminal_build'),
-    terminalName: fields.text('terminal_name'),
-    login: fields.id('login'),
-    server: fields.text('server'),
+    proof,
+    hello: {
+      eaVersion: fields.text('ea_version'),
+      terminalBuild: fields.integer('terminal_build'),
+      terminalName: fields.text('terminal_name'),
+      login: fields.id('login'),
+      server: fields.text('server'),
+      instance,
+    },
   }
 }
 
@@ -528,5 +542,67 @@ export function parseTradeEvent(payload: Mt5Payload): Mt5TradeEvent {
     order: fields.optionalId('order'),
     position: fields.optionalId('position'),
     symbol: fields.text('symbol'),
+  }
+}
+
+/** The body of a trade request: the input without its message type, its order type as `type`. */
+export function tradeBody(input: Mt5TradeInput): Mt5Payload {
+  const account = { login: input.account.login, server: input.account.server }
+  switch (input.type) {
+    case 'order.place':
+      return { account, symbol: input.symbol, side: input.side, type: input.orderType, volume: input.volume, price: input.price, sl: input.sl, tp: input.tp }
+    case 'position.close': return { account, symbol: input.symbol, ticket: input.ticket, volume: input.volume }
+    case 'position.modify': return { account, symbol: input.symbol, ticket: input.ticket, sl: input.sl, tp: input.tp }
+    case 'order.modify': return { account, symbol: input.symbol, ticket: input.ticket, price: input.price, sl: input.sl, tp: input.tp }
+    case 'order.cancel': return { account, symbol: input.symbol, ticket: input.ticket }
+  }
+}
+
+/** Validate the EA's answer to a trade request. */
+export function parseTradeOutcome(id: string, payload: Mt5Payload): Mt5TradeOutcome {
+  const fields = new Fields(payload, 'trade result')
+  return {
+    status: fields.choice('status', ['done', 'placed', 'rejected', 'unknown']),
+    id,
+    blocked: null,
+    retcode: fields.integer('retcode'),
+    code: fields.word('code'),
+    message: fields.text('message'),
+    order: fields.optionalId('order'),
+    deal: fields.optionalId('deal'),
+    price: fields.optionalNumber('price'),
+    volume: fields.optionalNumber('volume'),
+    duplicate: fields.boolean('duplicate'),
+  }
+}
+
+const ORDER_MODES = ['market', 'limit', 'stop', 'stop_limit', 'sl', 'tp', 'close_by'] as const
+
+/** Validate a `symbol.info` answer. */
+export function parseSymbolInfo(payload: Mt5Payload): Mt5SymbolInfo {
+  const fields = new Fields(payload, 'symbol.info')
+  const orderModes: string[] = []
+  for (const mode of fields.list('order_modes')) {
+    if (typeof mode !== 'string' || !(ORDER_MODES as readonly string[]).includes(mode)) throw new Mt5ProtocolError(`symbol.info.order_modes must hold ${ORDER_MODES.join(', ')}`)
+    orderModes.push(mode)
+  }
+  return {
+    symbol: fields.name('symbol'),
+    digits: fields.integer('digits'),
+    point: fields.number('point'),
+    tickSize: fields.number('tick_size'),
+    contractSize: fields.number('contract_size'),
+    volumeMin: fields.number('volume_min'),
+    volumeMax: fields.number('volume_max'),
+    volumeStep: fields.number('volume_step'),
+    volumeLimit: fields.number('volume_limit'),
+    stopsLevel: fields.integer('stops_level'),
+    freezeLevel: fields.integer('freeze_level'),
+    tradeMode: fields.choice('trade_mode', TRADE_MODES),
+    execution: fields.word('execution'),
+    orderModes,
+    marginBuy: fields.optionalNumber('margin_buy'),
+    marginSell: fields.optionalNumber('margin_sell'),
+    sessionOpen: fields.boolean('session_open'),
   }
 }

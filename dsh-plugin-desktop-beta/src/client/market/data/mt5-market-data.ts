@@ -233,7 +233,7 @@ export function createMt5MarketData(options: Mt5MarketDataOptions): Mt5MarketDat
     const wasLive = live
     // While the terminal is away from its trade server, it misses ticks and later downloads the
     // bars of that time; the charts reload once it is back, so they match MT5 again.
-    live = !showsDemo && catalog !== null && current?.phase === 'ready' && !current.eaOutdated && current.terminal?.connected !== false
+    live = !showsDemo && catalog !== null && current?.phase === 'ready' && current.terminal?.connected !== false
     if (wasLive && !live) stale = true
     const next: MarketSource = showsDemo ? demo.source()
       : catalog === null ? { key: 'mt5', state: 'waiting', live: false, watch: [] }

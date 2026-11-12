@@ -1,25 +1,28 @@
-# DshBridge protocol v1
+# DshBridge protocol v2
 
-DshBridge connects a MetaTrader 5 terminal to DSH Desktop. The EA in MT5 is the TCP client, because MQL5 sockets cannot listen. The Desktop main process is the server. The Desktop implements its side in `dsh-plugin-desktop-beta/src/mt5/`. The EA source is in `mt5/MQL5/`.
+DshBridge connects a MetaTrader 5 terminal to DSH Desktop. The EA in MT5 is the TLS client, because MQL5 sockets cannot listen. The Desktop main process is the server. The Desktop implements its side in `dsh-plugin-desktop-beta/src/mt5/`. The EA source is in `mt5/MQL5/`.
 
-MT5 is the source of truth. The Desktop shows only what the EA reports, and it never resends a request whose outcome is unknown.
+MT5 is the source of truth. The Desktop shows only what the EA reports, keeps no record of trade requests, and never resends a request whose outcome is unknown.
 
 Stages:
 
 - **Stage 1 (implemented):** connection, account, funds, status.
 - **Stage 2 (implemented, EA 1.1.0):** symbols, quotes, bars, positions, orders, history.
-- **Stage 3 (planned):** trading and its safety.
+- **Stage 3 (implemented, EA 1.2.0):** TLS, mutual authentication, signed trade requests, and trading.
 
-Messages marked *planned* below may still change before their stage ships. Stage 2 only added message types, so the protocol version is still 1.
+Stage 2 only added message types. Stage 3 changed the transport and the handshake, so it is protocol 2. An EA older than 1.2.0 speaks protocol 1 over plain TCP and cannot connect to this Desktop.
 
 ## Transport
 
-- **Connection:** plain TCP. The Desktop listens on port 19500 by default, configurable in Settings → MT5 connection.
-  - On loopback, only an EA on the same computer can connect.
+- **Connection:** TLS 1.2 or later over TCP. The Desktop listens on `127.0.0.1:19500` by default; the port is configurable in Settings → MT5 connection.
+  - On loopback, only an EA on the same computer can connect. This is the usual setup.
   - With *Allow LAN connections*, the Desktop listens on every interface.
-- **Admission:** a connection must come from loopback or from an address on the Desktop's allowlist (an empty allowlist admits any address). It must then authenticate with the bridge token.
-- **Plain text:** the connection is not encrypted, so use LAN mode only on a trusted network. TLS is planned before real-money trading.
-- **Terminal permission:** the terminal must allow the Desktop's address under Tools → Options → Expert Advisors → *Allow WebRequest for listed URL*.
+- **Admission:** the Desktop keeps no address list; where the EA may connect is set in the EA and the terminal. Any connection that reaches the Desktop must finish TLS and the handshake within 5 seconds, and only an EA that proves the token gets a session. At most 4 connections may wait to authenticate; the Desktop turns more away before TLS.
+- **Certificate:** a self-signed RSA 2048 certificate, valid for 10 years. It is kept with its key in `<DSH home>/mt5-bridge-tls.json`, readable by the owner only.
+  - The Desktop makes a new one when the file is unreadable or the certificate ends within 30 days. A new certificate drops every connection, and the EA reconnects.
+  - MT5 accepts any certificate: it checks neither the issuer, the name nor the dates. So TLS alone only encrypts. The EA authenticates the Desktop by the handshake proofs, which bind the certificate's fingerprint.
+- **No plain text:** there is no unencrypted fallback, so a connection cannot be downgraded.
+- **Terminal permission:** the terminal must allow the Desktop's address under Tools → Options → Expert Advisors → *Allow WebRequest for listed URL*: `127.0.0.1` on the same computer, else the Desktop's LAN address. Loopback is no exception: without the entry, `SocketConnect` fails with error 4014. The list goes by host only, so any port works.
 
 ## Framing
 
@@ -33,13 +36,13 @@ Messages marked *planned* below may still change before their stage ships. Stage
 
 ## Envelopes
 
-Every frame carries `"v": 1`.
+Every frame carries `"v": 2`.
 
 ```json
-{"v":1,"id":"5b0c…","type":"account.snapshot","payload":{}}
-{"v":1,"id":"5b0c…","type":"response","ok":true,"payload":{…}}
-{"v":1,"id":"5b0c…","type":"response","ok":false,"error":{"code":"not_ready","message":"…","retcode":10018}}
-{"v":1,"type":"account.snapshot","payload":{…}}
+{"v":2,"id":"5b0c…","type":"account.snapshot","payload":{}}
+{"v":2,"id":"5b0c…","type":"response","ok":true,"payload":{…}}
+{"v":2,"id":"5b0c…","type":"response","ok":false,"error":{"code":"not_ready","message":"…","retcode":10018}}
+{"v":2,"type":"account.snapshot","payload":{…}}
 ```
 
 - **Request:** has an `id` of at most 128 characters, unique among the sender's requests in flight, and a `type`. The receiver answers exactly once with a response carrying the same `id`.
@@ -52,30 +55,39 @@ Every frame carries `"v": 1`.
 
 ## Session
 
-1. **Hello.** The EA connects and sends `system.hello` within 5 seconds. Otherwise the Desktop closes the connection.
+1. **TLS.** The EA connects and completes TLS. It reads the SHA-1 fingerprint *F* of the Desktop's certificate, as lowercase hex without separators.
+2. **Handshake.** The EA must complete these steps within 5 seconds of connecting, TLS included. Otherwise the Desktop closes the connection.
 
-   ```json
-   {"token":"…","protocol":1,"ea_version":"1.1.0","terminal_build":5120,
-    "terminal_name":"MetaTrader 5","login":"50123456","server":"Example-Demo"}
-   ```
+   Each side proves it holds the bridge token without sending it. A proof is `HMAC-SHA256(token, "dsh-mt5/2 <label>\n" + Ne + "\n" + Nd + "\n" + F)` as lowercase hex, keyed with the token's UTF-8 bytes. *Ne* and *Nd* are 32 random bytes in lowercase hex, which the EA and the Desktop choose for each connection.
 
-   - **Success:** the Desktop answers with `{"protocol":1,"desktop":"DSH Desktop Beta …","heartbeat_ms":5000,"idle_ms":15000}`.
-   - **Failure:** the Desktop answers with one of these errors, then closes the connection:
+   | Step | Frame | Payload |
+   |---|---|---|
+   | 1 | EA → Desktop: `system.hello` request | `{"protocol":2,"nonce":Ne}`. Nothing about the account before the Desktop has proved the token. |
+   | 2 | Desktop → EA: response | `{"protocol":2,"nonce":Nd,"proof":…}`, with the label `desktop`. |
+   | 3 | EA checks the Desktop | The EA works out the `desktop` proof with the *F* it saw. If the proofs differ, the tokens differ or something impersonates the Desktop. The EA disconnects, says so on its chart, and tries again in 30 seconds. |
+   | 4 | EA → Desktop: `system.auth` request | `{"proof":…,"ea_version":"1.2.0","terminal_build":5120,"terminal_name":"MetaTrader 5","login":"50123456","server":"Example-Demo","instance":"…"}`, with the label `ea`. `instance` names the EA's [request journal](#journal). |
+   | 5 | Desktop → EA: response | `{"protocol":2,"desktop":"DSH Desktop Beta …","heartbeat_ms":5000,"idle_ms":15000}`. The session is authenticated. |
+
+   - **Session key:** both sides then derive *Ks*, the proof with the label `session`, as 32 bytes. It signs the [trade requests](#signed-requests) of this session.
+   - **Why it holds:** a man in the middle must show the EA its own certificate. The EA then sees another *F* than the Desktop, so the real Desktop's proof fails the EA's check, and relaying it does not help. Proofs and signatures recorded in one session are worthless in another, because the nonces differ.
+   - **Failure:** the Desktop answers one of these errors, then closes the connection. The EA tries again every 30 seconds.
 
      | Error | Meaning |
      |---|---|
-     | `auth_failed` | wrong token |
-     | `unsupported_protocol` | another protocol version |
-     | `bad_request` | invalid hello |
-     | `busy` | another account is connected |
+     | `auth_failed` | The EA's proof does not match: the tokens differ. |
+     | `unsupported_protocol` | Another protocol version. |
+     | `bad_request` | An invalid hello or auth. |
+     | `busy` | Another account is connected. |
 
-     The EA retries a refused hello slowly, every 30 seconds.
-   - **First frame:** a first frame that is not a hello, or not valid JSON, closes the connection without an answer.
-2. **One session.** At most one authenticated session exists.
-   - A hello from the same `login` and `server` replaces the old session, which an EA restart or a half-open connection leaves behind.
+   - **Wrong frames:** a frame other than the expected `system.hello` or `system.auth`, or one that is not valid JSON, closes the connection without an answer.
+   - **No TLS:** a failed TLS handshake closes the connection. An EA older than 1.2.0 fails this way, because it speaks plain TCP. Settings shows the rejection as `tls`.
+   - **Self-test:** when it starts, the EA checks its SHA-256 and HMAC-SHA256 against the test vectors of FIPS 180-2 and RFC 4231. If they fail, the EA does not connect and says why.
+3. **One session.** At most one authenticated session exists.
+   - An auth from the same `login` and `server` replaces the old session, which an EA restart or a half-open connection leaves behind.
    - Another account gets `busy`.
-3. **Heartbeat.** Both sides send `system.ping` events, `{"time": <ms>}`, whenever they sent nothing for `heartbeat_ms`. Either side ends a session that received no frame for `idle_ms`.
-4. **Sync.** On each new session, and when the user asks for a resync, the Desktop sends these requests in order:
+4. **Heartbeat.** Both sides send `system.ping` events, `{"time": <ms>}`, whenever they sent nothing for `heartbeat_ms`. Either side ends a session that received no frame for `idle_ms`.
+   - **During a trade:** MT5 runs a trade synchronously, and the EA cannot ping meanwhile. So while a trade request waits for its answer, the Desktop does not end the session for silence. The request's own timeout of 30 seconds applies instead.
+5. **Sync.** On each new session, and when the user asks for a resync, the Desktop sends these requests in order:
    1. `system.resync`
    2. `system.status`
    3. `account.snapshot`
@@ -84,17 +96,16 @@ Every frame carries `"v": 1`.
    6. `orders.snapshot`
    7. `market.subscribe`, with the subscriptions the Desktop needs now. A new session starts without any.
 
-   - **Older EA:** an EA whose `ea_version` is below 1.1.0 gets steps 1 to 3 only, and the Desktop sends it no stage 2 request. The Desktop shows the account and asks the user to update the EA.
    - **Failure:** if any of them fails, the Desktop drops the session, and the EA reconnects and syncs again.
    - **Ready:** the session counts as *ready* once the sync completes.
-5. **Updates.** After answering `system.resync`, the EA pushes these events whenever their content differs from what it last sent or answered:
+6. **Updates.** After answering `system.resync`, the EA pushes these events whenever their content differs from what it last sent or answered:
    - `system.status` and `account.snapshot`.
-   - `positions.snapshot` and `orders.snapshot`, once the Desktop asked for them after the last `system.resync`. An older Desktop that never asks gets none.
+   - `positions.snapshot` and `orders.snapshot`, once the Desktop asked for them after the last `system.resync`.
 
-   The EA compares about every 500 ms, and on the timer cycle after a trade transaction. A ping change alone is pushed at most every 10 seconds.
+   The EA compares about every 500 ms, and on the timer cycle after a trade or a trade transaction. A ping change alone is pushed at most every 10 seconds.
 
    On every timer cycle (100 ms, the EA input `TimerMs`), the EA also pushes the queued `trade.event` events, then `market.tick` and `market.bar` for the subscriptions that changed.
-6. **Reconnect.** The EA reconnects with exponential backoff from 1 to 5 seconds, and retries a refused hello every 30 seconds. A Desktop restart, an EA restart, and a network outage all end in a new session and a fresh sync.
+7. **Reconnect.** The EA reconnects with exponential backoff from 1 to 5 seconds, and retries a refused handshake every 30 seconds. A Desktop restart, an EA restart, and a network outage all end in a new session and a fresh sync.
 
 ## Times
 
@@ -106,7 +117,7 @@ MT5 stamps ticks, bars and trades in trade server time. The EA converts them wit
 
 ## Trading gate
 
-The Desktop accepts new trades only while every condition below holds. It reports the failed conditions in this order:
+The Desktop's main process checks these conditions before it sends each trade request, so the page cannot bypass them. It reports the failed conditions in this order:
 
 | Reason | Condition |
 |---|---|
@@ -118,11 +129,13 @@ The Desktop accepts new trades only while every condition below holds. It report
 | `ea-trade-disabled` | `ea_trade_allowed` is false (the EA's "Allow Algo Trading"). |
 | `account-trade-disabled` | `trade_allowed` is false (for example an investor login). |
 | `account-expert-disabled` | `trade_expert` is false. |
-| `real-account-locked` | `trade_mode` is `real` and real-money trading is not enabled in the Desktop. |
+| `disclaimer` | The user has not agreed to the current version of the trading risk disclaimer in the Desktop. |
+
+The gate is the same for demo, contest and real accounts. Once the disclaimer is agreed to, all of them trade.
 
 ## Stage 1 messages
 
-### `system.hello` (EA → Desktop, request)
+### `system.hello` and `system.auth` (EA → Desktop, requests)
 
 See [Session](#session).
 
@@ -165,8 +178,6 @@ The EA forgets what it last pushed and answers `{}`.
 | `margin_so_mode` | `percent` / `money` | `ACCOUNT_MARGIN_SO_MODE`: the unit of the two levels above |
 
 ## Stage 2 messages
-
-These need EA 1.1.0 or later. The Desktop sends them only to such an EA.
 
 ### `symbols.list` (Desktop → EA, request)
 
@@ -373,36 +384,171 @@ The EA saves its chart as the template `MQL5\Profiles\Templates\DshBridgeReload.
 - **Sender:** only the Desktop main process sends it; the page cannot.
 - **Failure:** `not_ready` when the chart template cannot be saved.
 
-## Stage 3 messages (planned)
+## Stage 3 messages
 
-| Type | Direction | Purpose |
+### Signed requests
+
+The five trade requests are signed: `order.place`, `position.close`, `position.modify`, `order.modify` and `order.cancel`. Their payload holds the request's content as JSON text, and its MAC:
+
+```json
+{"body":"{\"account\":{\"login\":\"50123456\",\"server\":\"Example-Demo\"},\"symbol\":\"EURUSD\",…}","mac":"…"}
+```
+
+- **MAC:** `HMAC-SHA256(Ks, id + "\n" + type + "\n" + body)` as lowercase hex, with the session key *Ks* from the [handshake](#session). It covers the exact bytes of `body`, so neither side canonicalizes JSON.
+- **Check:** the EA checks the MAC before it parses the body. A wrong MAC gets the error `bad_signature`, and a payload that is not `{body, mac}` gets `bad_request`. Nothing of such a request runs, and the EA does not journal it.
+- **Replay:** a request replayed in the same session carries an id the EA has journaled, so it gets its first outcome back and does not trade again (see [Journal](#journal)). Replayed in another session, its MAC fails, because the session key differs.
+- **Id:** 8 to 64 letters, digits or dashes. The Desktop uses a new UUID for each user action.
+
+### Trade requests (Desktop → EA)
+
+Every body has `account`, `{"login": …, "server": …}`, the account the request is meant for, and `symbol`. The EA refuses a request for any account other than the terminal's with `account_mismatch`. So a page still showing an account the terminal has left cannot trade on the new one.
+
+| Type | Body, besides `account` and `symbol` |
+|---|---|
+| `order.place` | `side` (`buy` / `sell`), `type` (`market` / `limit` / `stop`), `volume` in lots, `price` (null for a market order, the order price for a pending order), `sl` and `tp` (null for none). |
+| `position.close` | `ticket`, and `volume`: the lots to close. Fewer lots than the position holds close part of it, and must leave at least the symbol's minimum. |
+| `position.modify` | `ticket`, `sl` and `tp`: the new levels; null removes one. |
+| `order.modify` | `ticket`, `price`, `sl` and `tp`. |
+| `order.cancel` | `ticket`. |
+
+- **Tickets** are decimal strings.
+- **Deviation:** `order.place` and `position.close` take an optional `deviation`, the slippage allowed in points, from 0 to 1,000. The Desktop leaves it out, and the EA uses 10.
+
+### Execution (EA)
+
+- **Checks:** before it trades, the EA checks everything it can:
+  - that its journal can be written;
+  - the account, and the terminal's connection to the trade server;
+  - the permissions: the terminal's Algo Trading, the EA's "Allow Algo Trading", and the account's trade and Expert Advisor permissions;
+  - the symbol: that it exists, its trade mode, and that it takes the order type, SL and TP;
+  - the lots and prices: lots within the symbol's bounds and on its step, prices on its tick size. The EA refuses values off the grid, and never rounds them;
+  - the ticket: that it exists and is on the symbol.
+
+  Last comes `OrderCheck`, which trades nothing: it checks the margin, the stop distances and the rest.
+- **Filling:** a deal or a pending order tries the symbol's filling policies in turn: Fill or Kill, Immediate or Cancel, then Return. It takes the first one `OrderCheck` accepts.
+- **Expiry:** a pending order lasts until cancelled where the symbol allows that, else until the end of the day. A symbol that takes pending orders only with an expiry date is refused with `expiration`.
+- **Close:** `position.close` sends an opposite deal for the lots, naming the position by its ticket.
+- **Modify:** a modified pending order keeps its expiry and its stop-limit price.
+- **Comment:** new orders carry the comment `dsh:<first 8 characters of the id>`. Some brokers rewrite comments, so it only helps people tell the orders apart.
+- **Send:** `OrderSend` runs synchronously, and a market deal's price is refreshed just before it. The next timer cycle pushes the snapshots that changed.
+
+### Trade outcome (EA → Desktop, response)
+
+The response to each trade request:
+
+```json
+{"status":"done","retcode":10009,"code":"sent","message":"Request executed","order":"3002","deal":"4002","price":1.07255,"volume":0.1,"duplicate":false}
+```
+
+| Field | Type | Meaning |
 |---|---|---|
-| `symbol.info` | Desktop → EA | One symbol's full trading rules: stops and freeze levels, filling and order modes, expiration modes, and the rest that order checks need. |
-| `order.place` | Desktop → EA | A market deal, or a limit or stop pending order, with lots, price, SL/TP, deviation and comment. |
-| `order.modify` / `order.cancel` | Desktop → EA | Change a pending order's price or SL/TP, or delete it. |
-| `position.close` / `position.modify` | Desktop → EA | Close a position fully or partly, or change its SL/TP. |
-| `order.result` | EA → Desktop | The response of a trade request: the retcode and its description, the order ticket, and the fill price. |
+| `status` | `done` / `placed` / `rejected` / `unknown` | `done`: a deal, close, modification or cancel succeeded. `placed`: a pending order was placed. `rejected`: nothing changed. `unknown`: MT5 cannot tell whether the trade server got the request. |
+| `retcode` | integer | The trade server's `TRADE_RETCODE_*`; 0 when the EA refused the request itself. |
+| `code` | string | `sent` for an `OrderSend` outcome, `check` for an `OrderCheck` refusal, otherwise the reason the EA refused (below). |
+| `message` | string | MT5's comment, or the EA's reason, for people. |
+| `order`, `deal` | string or null | Tickets. |
+| `price`, `volume` | number or null | The fill price and the lots filled. |
+| `duplicate` | boolean | The id ran before, and this is its first outcome again. |
 
-After a trade, the Desktop takes the new state from the `trade.event`, `positions.snapshot` and `orders.snapshot` events that follow.
+**Return codes:** 10008 (placed), 10009 (done) and 10010 (done in part) succeed, as `placed` for a pending order and `done` otherwise. On 10010, `volume` holds the lots actually filled. 10011, 10012 and 10031 mean an error in the terminal, a timeout, or no connection: the request may or may not have reached the trade server, so they are `unknown`. A request that `OrderSend` did not send at all is `rejected` with the code `not_sent`. Every other return code is `rejected`.
 
-Trade requests are idempotent by `id`:
+**EA refusals,** with `status: "rejected"` and `retcode: 0`:
 
-- **Journal:** the EA keeps the last 1,000 completed ids with their results in `MQL5/Files/DshBridge/requests.log`.
-- **Repeated id:** the EA answers a repeated id with the original result and `duplicate: true`, without trading again.
-- **Comment:** orders carry the comment `dsh:<first 8 characters of the id>`.
-- **Unconfirmed result:** a request with no answer within 30 seconds is marked unconfirmed, and the Desktop resyncs. It never resends the request on its own.
+| Code | Reason |
+|---|---|
+| `account_mismatch` | The request is for another account than the terminal's. |
+| `not_connected` | The terminal is not connected to the trade server. |
+| `terminal_trading_off` | Algo Trading is off in the terminal. |
+| `ea_trading_off` | "Allow Algo Trading" is off in the EA's properties. |
+| `account_trading_off` | The account cannot trade, for example under an investor password. |
+| `expert_trading_off` | The trade server does not let Expert Advisors trade on the account. |
+| `no_symbol` | The terminal has no such symbol. |
+| `trade_mode` | The symbol's trade mode excludes the request: disabled, close only, long only or short only. |
+| `order_mode` | The symbol does not take the order type, or SL or TP. |
+| `expiration` | The symbol takes pending orders only with an expiry date. |
+| `invalid_volume` | The lots are outside the symbol's bounds or off its step, or a partial close would leave less than the minimum. |
+| `invalid_price` | A price is off the symbol's tick size. |
+| `no_quote` | The symbol has no current price. |
+| `no_position` / `no_order` | There is no such position or pending order. |
+| `symbol_mismatch` | The ticket is on another symbol. |
+| `journal_unavailable` | The EA cannot write its journal, and it trades nothing without it. |
+
+### Journal
+
+The EA journals each trade request in `MQL5\Files\DshBridge\requests.log`, in the terminal's data folder. It is the only record of trade requests: the Desktop keeps none.
+
+- **Format:** JSON lines in UTF-8. The first line, `{"journal":1,"instance":"…","since":<ms>}`, names the journal. Each other line is a state of a request:
+  - `{"id":…,"state":"sending","type":…,"at":<ms>,"body":…}` reaches the disk before `OrderSend`;
+  - `{"id":…,"state":"done","at":<ms>,"result":{…}}` follows with the outcome. The state is `unknown` instead when the outcome is unknown.
+- **At most once:** a repeated id never runs again. The EA answers it with the first outcome and `duplicate: true`. If that outcome was never written, because the EA stopped inside `OrderSend`, the answer is `unknown` with the code `interrupted`.
+- **Restart:** when the EA starts, it settles each request the last run left at `sending` as `unknown`, with the code `interrupted`.
+- **Length:** once the file passes 2,000 lines, the EA rewrites it with the newest 1,000 requests and moves `since` to that time.
+- **One EA:** the EA keeps the file open. A second DshBridge in the same terminal cannot open it, and stays offline.
+- **Failures:** if the journal cannot be opened for another reason, the EA connects, but refuses every trade with `journal_unavailable`. A file that is not a journal is kept as `requests.bad`, and a new journal starts with a new instance.
+
+### Unconfirmed outcomes (Desktop)
+
+The Desktop keeps no state of its own about trades. MT5 decides, and the Desktop shows what MT5 reports.
+
+- **One at a time:** while a trade request waits for its answer, the Desktop answers another with `busy` and does not send it.
+- **Once:** the Desktop sends each request once, with a new id, and never resends it.
+- **No answer:** a trade request without an answer within 30 seconds is *unconfirmed*, and the Desktop ends the session. The EA does one thing at a time, so it reconnects only after `OrderSend` returned. The sync that follows shows MT5's positions and orders as they are.
+- **Lost session:** if the session ends while a trade request waits, the request is unconfirmed too.
+- **Checking:** the user checks an unconfirmed outcome in the positions and the history. After a trade, the Desktop takes the new state from the `trade.event`, `positions.snapshot` and `orders.snapshot` events that follow.
+
+### `order.result` (Desktop → EA, request)
+
+`{"ids": […]}`, up to 50 request ids: what the EA's journal holds about each of them. The request only reads, so it is not signed. The Desktop does not send it; it is there for diagnostics.
+
+```json
+{"instance":"…","since":1762000000000,"results":[{"id":"…","state":"done","result":{…}}]}
+```
+
+- **`state`:** `done` with the outcome, `unknown` (the outcome is unknown, or the EA stopped inside `OrderSend`), or `none` with `result` null.
+- **`none`:** the journal has no such id. That proves the request never ran only if this is the journal `instance` that would have received it, and the request came after `since`.
+
+### `symbol.info` (Desktop → EA, request)
+
+`{"symbol": "EURUSD"}`: the trade rules of a symbol. The order ticket reads them whenever it shows a symbol, and after every sync. The request only reads, so it is not signed. It fails with `unknown_symbol` when the terminal has no such symbol.
+
+| Field | Type | Source |
+|---|---|---|
+| `symbol` | string | |
+| `digits` | integer | `SYMBOL_DIGITS` |
+| `point`, `tick_size` | number | `SYMBOL_POINT`, `SYMBOL_TRADE_TICK_SIZE` |
+| `contract_size` | number | `SYMBOL_TRADE_CONTRACT_SIZE` |
+| `volume_min`, `volume_max`, `volume_step`, `volume_limit` | number | `SYMBOL_VOLUME_MIN`, `SYMBOL_VOLUME_MAX`, `SYMBOL_VOLUME_STEP`, `SYMBOL_VOLUME_LIMIT`, in lots; a limit of 0 means none |
+| `stops_level`, `freeze_level` | integer | `SYMBOL_TRADE_STOPS_LEVEL`, `SYMBOL_TRADE_FREEZE_LEVEL`, in points. With 0 there is no fixed minimum, and the trade server decides. |
+| `trade_mode` | `disabled` / `long_only` / `short_only` / `close_only` / `full` | `SYMBOL_TRADE_MODE` |
+| `execution` | `request` / `instant` / `market` / `exchange` | `SYMBOL_TRADE_EXEMODE` |
+| `filling` | array of `fok`, `ioc`, `boc` | `SYMBOL_FILLING_MODE` |
+| `order_modes` | array of `market`, `limit`, `stop`, `stop_limit`, `sl`, `tp`, `close_by` | `SYMBOL_ORDER_MODE` |
+| `expiration_modes` | array of `gtc`, `day`, `specified`, `specified_day` | `SYMBOL_EXPIRATION_MODE` |
+| `margin_buy`, `margin_sell` | number or null | `OrderCalcMargin` of one lot at the current ask or bid, in the account currency; null when MT5 cannot tell |
+| `session_open` | boolean | as in [`market.tick`](#markettick-ea--desktop-event) |
 
 ## Error codes
 
 | Code | Meaning |
 |---|---|
-| `auth_failed` | The hello's token does not match. |
-| `unsupported_protocol` | The hello's protocol version is not 1. |
+| `auth_failed` | The EA's proof does not match the Desktop's token. |
+| `unsupported_protocol` | The hello's protocol version is not 2. |
 | `bad_request` | A request's payload is invalid. |
-| `busy` | Another account is connected, or too many connections are waiting to authenticate. |
+| `bad_signature` | A trade request's MAC does not match the session. Nothing ran. |
+| `busy` | Another account is connected. Reported locally by the Desktop for a trade request while another one waits for its answer. |
 | `unknown_type` | The receiver does not serve the request type. |
 | `unknown_symbol` | The terminal has no such symbol. |
-| `not_ready` | The EA has not authenticated, or the terminal cannot answer yet: `HistorySelect` failed. |
-| `timeout`, `disconnected`, `not_connected` | Reported locally by the Desktop for requests that got no answer. |
+| `not_ready` | The EA has not authenticated, or the terminal cannot answer yet: `HistorySelect` failed, or the chart template cannot be saved. |
+| `timeout`, `disconnected`, `not_connected` | Reported locally by the Desktop for requests that got no answer. A trade request that times out or loses its session is unconfirmed. |
 | `duplicate_id` | Reported locally by the Desktop: a request with this `id` is already in flight. |
-| `ea_outdated` | Reported locally by the Desktop: the connected EA is older than 1.1.0 and does not serve stage 2. |
+
+Settings → MT5 connection shows why the Desktop last turned a connection away:
+
+| Reason | Meaning |
+|---|---|
+| `tls` | The TLS handshake failed, as it does for an EA older than 1.2.0. |
+| `token` | The EA's proof does not match: the tokens differ. |
+| `protocol` | Another protocol version. |
+| `busy` | Another account is connected, or too many connections wait to authenticate. |
+| `handshake-timeout` | The EA did not authenticate within 5 seconds. |
+| `invalid` | The first frames were not a valid hello and auth. |

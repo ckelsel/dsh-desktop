@@ -1,19 +1,21 @@
 /**
  * Order ticket, after the TradingView web order panel: sell and buy prices with the spread, market,
  * limit and stop orders, lots with presets, take profit and stop loss with their distance and
- * expected result, the margin the order needs, and one submit button that names the order. Orders
- * go to the trading provider, which forwards them to MT5; the demo account answers `offline`. While
- * the MT5 connection refuses trades, the button is off and the first reason shows below it.
+ * expected result, the margin the order needs, and one submit button that names the order, beside
+ * the account's type. The order is checked against the symbol's rules from MT5 before it goes to
+ * the trading provider, which forwards it to MT5; the demo account answers `offline`. While the MT5
+ * connection refuses trades, the button is off and the first reason shows below it; until the
+ * trading risk disclaimer is agreed to, the button opens it instead.
  */
 import { useEffect, useRef, useState } from 'react'
 import { Minus, Plus } from 'lucide-react'
 import { roundPrice, type MarketDataProvider, type MarketSymbol, type Quote } from './data/market-data.ts'
 import {
-  bracketError, conversionRate, direction, entryPrice, lotsValid, marginFor, pendingPriceValid, pipValue, pipsBetween, profitFor,
-  roundLots, type OrderType, type Side, type TradingProvider,
+  bracketError, conversionRate, direction, entryPrice, exitPrice, lotsValid, marginFor, pendingPriceValid, pipValue, pipsBetween, profitFor,
+  roundLots, stopsDistanceError, tradeModeError, type OrderType, type Side, type TradeRules, type TradingProvider,
 } from './data/trading.ts'
 import { formatLots, formatMoney, formatNumber, formatPips, formatPrice, formatSigned, parseDecimal, trend } from './format.ts'
-import { blockText, describeSymbol, resultNotice } from './labels.ts'
+import { blockText, describeSymbol, pendingSideText, resultNotice } from './labels.ts'
 import type { MarketActions, MarketPageProps, MarketT, Notify, UseAccount, UseQuotes } from './page-types.ts'
 
 export interface OrderTicketProps {
@@ -25,7 +27,16 @@ export interface OrderTicketProps {
   useStore: MarketPageProps['useStore']
   actions: MarketActions
   notify: Notify
+  /** Show the trading risk disclaimer for the user to agree to. */
+  onDisclaimer(): void
 }
+
+/** The message of each way an order breaks its symbol's rules. */
+const RULE_ERRORS = {
+  tradeDisabled: 'ticket.errorTradeDisabled', closeOnly: 'ticket.errorCloseOnly', longOnly: 'ticket.errorLongOnly',
+  shortOnly: 'ticket.errorShortOnly', orderType: 'ticket.errorOrderType',
+  pendingDistance: 'ticket.errorPendingDistance', stopsDistance: 'ticket.errorStopsDistance',
+} as const
 
 const LOT_PRESETS = [0.01, 0.1, 0.5, 1]
 const ORDER_TYPES: readonly OrderType[] = ['market', 'limit', 'stop']
@@ -52,17 +63,17 @@ function PriceField(props: { id: string; label: string; value: string; step: num
     onChange((current + sign * step).toFixed(decimals))
   }
   return <div className="dshMkStepper" data-disabled={disabled || undefined}>
-    <button type="button" className="dshMkStepButton" aria-label={`${t('ticket.decrease')} ${label}`} disabled={disabled} onClick={() => { nudge(-1) }}><Minus size={14} /></button>
+    <button type="button" className="dshMkStepButton" aria-label={t('ticket.decrease', { field: label })} disabled={disabled} onClick={() => { nudge(-1) }}><Minus size={14} /></button>
     <input id={id} value={value} inputMode="decimal" autoComplete="off" spellCheck={false} disabled={disabled} aria-label={label}
       onChange={(event) => { onChange(event.target.value) }} />
-    <button type="button" className="dshMkStepButton" aria-label={`${t('ticket.increase')} ${label}`} disabled={disabled} onClick={() => { nudge(1) }}><Plus size={14} /></button>
+    <button type="button" className="dshMkStepButton" aria-label={t('ticket.increase', { field: label })} disabled={disabled} onClick={() => { nudge(1) }}><Plus size={14} /></button>
   </div>
 }
 
 interface Bracket { on: boolean; text: string }
 
 /** The order ticket (see module doc). */
-export function OrderTicket({ t, market, trading, useQuotes, useAccount, useStore, actions, notify }: OrderTicketProps) {
+export function OrderTicket({ t, market, trading, useQuotes, useAccount, useStore, actions, notify, onDisclaimer }: OrderTicketProps) {
   const ticker = useStore(state => state.symbol)
   const type = useStore(state => state.orderType)
   const savedLots = useStore(state => state.lots)
@@ -71,6 +82,8 @@ export function OrderTicket({ t, market, trading, useQuotes, useAccount, useStor
   const account = useAccount(state => state.account)
   const source = useAccount(state => state.connection.source)
   const blocked = useAccount(state => state.connection.source === 'mt5' ? state.connection.blocked[0] : undefined)
+  const syncedAt = useAccount(state => state.connection.mt5?.syncedAt ?? null)
+  const [rules, setRules] = useState<TradeRules | null>(null)
   const [side, setSide] = useState<Side>('buy')
   const [lots, setLots] = useState(() => symbol === undefined ? String(savedLots) : lotsText(symbol, savedLots))
   const [pending, setPending] = useState('')
@@ -79,6 +92,14 @@ export function OrderTicket({ t, market, trading, useQuotes, useAccount, useStor
   const [sending, setSending] = useState(false)
   const alive = useRef(true)
   useEffect(() => () => { alive.current = false }, [])
+
+  // The rules come from MT5 with every sync, so a new session reads them again.
+  useEffect(() => {
+    let current = true
+    setRules(null)
+    trading.rules(ticker).then((next) => { if (current) setRules(next) }, () => {})
+    return () => { current = false }
+  }, [trading, ticker, syncedAt])
 
   // A new symbol, side or order type starts from prices around the current quote.
   useEffect(() => {
@@ -107,21 +128,30 @@ export function OrderTicket({ t, market, trading, useQuotes, useAccount, useStor
   const slPrice = stopLoss.on ? bracketPrice(stopLoss, -sign * STOP_LOSS_PIPS) : null
   const lotsOk = lotsValid(symbol, lotsValue)
   const sized = lotsOk ? lotsValue : Number.NaN
-  const margin = quote !== undefined && rate !== null ? marginFor(symbol, sized, isPending ? pendingValue : quote.last, rate, account?.leverage ?? 100) : Number.NaN
+  // MT5's margin per lot when it gave one; it knows the symbol's margin rate, the estimate does not.
+  const perLot = rules?.marginPerLot[side] ?? null
+  const margin = perLot !== null ? perLot * sized
+    : quote !== undefined && rate !== null ? marginFor(symbol, sized, isPending ? pendingValue : quote.last, rate, account?.leverage ?? 100) : Number.NaN
   const pipWorth = rate === null ? Number.NaN : pipValue(symbol, sized, rate)
   const notional = rate === null || !Number.isFinite(reference) ? Number.NaN : symbol.contractSize * sized * reference * rate
 
+  const modeBroken = rules === null ? null : tradeModeError(rules, side, type)
   let error: string | null = null
   if (account === null) error = t('ticket.noAccount')
+  else if (modeBroken !== null) error = t(RULE_ERRORS[modeBroken])
   else if (!lotsOk) error = t('ticket.errorLots', { min: formatLots(symbol, symbol.minLots), max: formatLots(symbol, symbol.maxLots), step: formatLots(symbol, symbol.lotStep) })
   else if (isPending && !(pendingValue > 0)) error = t('ticket.errorPrice')
-  else if (isPending && quote !== undefined && !pendingPriceValid(side, type, pendingValue, quote)) {
-    error = t(side === 'buy' ? (type === 'limit' ? 'ticket.errorBuyLimit' : 'ticket.errorBuyStop') : (type === 'limit' ? 'ticket.errorSellLimit' : 'ticket.errorSellStop'))
-  } else if (!isPending && quote !== undefined && !quote.marketOpen) error = t('ticket.errorClosed')
+  else if (isPending && quote !== undefined && !pendingPriceValid(side, type, pendingValue, quote)) error = pendingSideText(t, side, type)
+  else if (!isPending && quote !== undefined && !quote.marketOpen) error = t('ticket.errorClosed')
   else if (Number.isFinite(reference)) {
     const wrong = bracketError(side, reference, { takeProfit: tpPrice, stopLoss: slPrice })
     if (wrong === 'takeProfit') error = t('ticket.errorTakeProfit')
     if (wrong === 'stopLoss') error = t('ticket.errorStopLoss')
+  }
+  if (error === null && rules !== null && quote !== undefined) {
+    const base = isPending ? pendingValue : exitPrice(quote, side)
+    const near = stopsDistanceError(rules, type, entryPrice(quote, side), base, { takeProfit: tpPrice, stopLoss: slPrice })
+    if (near !== null) error = t(RULE_ERRORS[near], { distance: t('ticket.pipsAway', { pips: formatPips(rules.stopsDistance / symbol.pip) }) })
   }
   const warning = error === null && account !== null && margin > account.freeMargin ? t('ticket.warnMargin') : null
 
@@ -142,14 +172,16 @@ export function OrderTicket({ t, market, trading, useQuotes, useAccount, useStor
     const current = Number.isFinite(lotsValue) ? lotsValue : symbol.minLots
     commitLots(Math.min(symbol.maxLots, Math.max(symbol.minLots, current + delta)))
   }
+  const needsDisclaimer = blocked === 'disclaimer'
   const submit = (): void => {
+    // Agreeing does not send the order: the trader submits it again.
+    if (needsDisclaimer) { onDisclaimer(); return }
     if (error !== null || sending || blocked !== undefined) return
     setSending(true)
     trading.sendOrder({
-      ticker: symbol.ticker, side, type, lots: lotsValue, price: isPending ? pendingValue : null,
-      takeProfit: tpPrice, stopLoss: slPrice, deviation: 10, comment: '',
+      ticker: symbol.ticker, side, type, lots: lotsValue, price: isPending ? pendingValue : null, takeProfit: tpPrice, stopLoss: slPrice,
     }).then((result) => {
-      const notice = resultNotice(t, result)
+      const notice = resultNotice(t, result, 'order', { price: value => formatPrice(symbol, value), lots: value => formatLots(symbol, value) })
       notify(notice.text, notice.tone)
     }, (reason: unknown) => {
       notify(t('result.rejected', { message: String(reason) }), 'error')
@@ -221,11 +253,11 @@ export function OrderTicket({ t, market, trading, useQuotes, useAccount, useStor
       <div className="dshMkField">
         <label htmlFor="dsh-mk-ticket-lots">{t('ticket.lots')}</label>
         <div className="dshMkStepper">
-          <button type="button" className="dshMkStepButton" aria-label={`${t('ticket.decrease')} ${t('ticket.lots')}`} onClick={() => { stepLots(-symbol.lotStep) }}><Minus size={14} /></button>
+          <button type="button" className="dshMkStepButton" aria-label={t('ticket.decrease', { field: t('ticket.lots') })} onClick={() => { stepLots(-symbol.lotStep) }}><Minus size={14} /></button>
           <input id="dsh-mk-ticket-lots" value={lots} inputMode="decimal" autoComplete="off" spellCheck={false}
             onChange={(event) => { setLots(event.target.value) }}
             onBlur={() => { if (Number.isFinite(lotsValue)) commitLots(lotsValue) }} />
-          <button type="button" className="dshMkStepButton" aria-label={`${t('ticket.increase')} ${t('ticket.lots')}`} onClick={() => { stepLots(symbol.lotStep) }}><Plus size={14} /></button>
+          <button type="button" className="dshMkStepButton" aria-label={t('ticket.increase', { field: t('ticket.lots') })} onClick={() => { stepLots(symbol.lotStep) }}><Plus size={14} /></button>
         </div>
         <div className="dshMkPresets">
           {LOT_PRESETS.map(preset => <button key={preset} type="button" className="dshMkChip" aria-pressed={lotsOk && Math.abs(lotsValue - preset) < 1e-9} onClick={() => { commitLots(preset) }}>
@@ -246,11 +278,17 @@ export function OrderTicket({ t, market, trading, useQuotes, useAccount, useStor
       </dl>
 
       {(error ?? warning) !== null && <p className="dshMkMessage" data-tone={error === null ? 'warning' : 'error'} role="alert">{error ?? warning}</p>}
-      <button type="button" className="dshMkSubmit" data-side={side} disabled={error !== null || sending || blocked !== undefined} onClick={submit}>
-        {sending ? t('ticket.sending') : submitLabel}
-      </button>
+      <div className="dshMkSubmitRow">
+        {source === 'mt5' && account !== null && <span className="dshMkAccountTag" data-mode={account.mode}
+          title={account.mode === 'real' ? t('ticket.realTitle') : undefined}>{t(`ticket.${account.mode}`)}</span>}
+        <button type="button" className="dshMkSubmit" data-side={side} disabled={error !== null || sending || (blocked !== undefined && !needsDisclaimer)} onClick={submit}>
+          {sending ? t('ticket.sending') : submitLabel}
+        </button>
+      </div>
       {source === 'mock' && <p className="dshMkHint">{t('ticket.demoHint')}</p>}
-      {blocked !== undefined && <p className="dshMkHint">{t('ticket.blockedHint', { reason: blockText(t, blocked) })}</p>}
+      {needsDisclaimer
+        ? <p className="dshMkHint">{t('ticket.disclaimerHint')} <button type="button" className="dshMkTextButton" onClick={onDisclaimer}>{t('ticket.disclaimerOpen')}</button></p>
+        : blocked !== undefined && <p className="dshMkHint">{t('ticket.blockedHint', { reason: blockText(t, blocked) })}</p>}
     </div>
   </section>
 }

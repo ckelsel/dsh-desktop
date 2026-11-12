@@ -5,7 +5,7 @@ import type { TradingConnection } from './data/trading.ts'
 export type ConnectionTone = 'mock' | 'idle' | 'busy' | 'ok' | 'warning' | 'error'
 
 type BadgeKey = 'account.mock' | 'conn.waiting' | 'conn.error' | 'conn.listening' | 'conn.handshaking' | 'conn.syncing' | 'conn.ready'
-  | 'conn.brokerLost' | 'conn.eaOutdated'
+  | 'conn.brokerLost'
 
 /** The badge's label key and tone for a connection. */
 export function connectionBadge(connection: TradingConnection): { key: BadgeKey; tone: ConnectionTone } {
@@ -20,7 +20,6 @@ export function connectionBadge(connection: TradingConnection): { key: BadgeKey;
     case 'handshaking': return { key: 'conn.handshaking', tone: 'busy' }
     case 'syncing': return { key: 'conn.syncing', tone: 'busy' }
     case 'ready':
-      if (status.eaOutdated) return { key: 'conn.eaOutdated', tone: 'warning' }
       return status.terminal?.connected === false ? { key: 'conn.brokerLost', tone: 'warning' } : { key: 'conn.ready', tone: 'ok' }
   }
 }

@@ -1,141 +1,187 @@
-# DshBridge（MT5 EA）
+# DshBridge (MT5 EA)
 
-DshBridge 把 MetaTrader 5 终端接到 DSH Desktop。
+DshBridge connects a MetaTrader 5 terminal to DSH Desktop.
 
-- **阶段 1**：桌面端行情页显示 MT5 的连接状态、账户和资金。
-- **阶段 2（当前，EA 1.1.0）**：品种、报价、K 线、持仓、挂单和历史都来自 MT5。
-- **阶段 3**：从桌面端下单。
+- **Stage 1:** the Desktop market page shows MT5's connection state, the account and its funds.
+- **Stage 2 (EA 1.1.0):** symbols, quotes, bars, positions, orders and history all come from MT5.
+- **Stage 3 (current, EA 1.2.0, protocol 2):** trading from the Desktop. The connection is TLS-encrypted, both sides authenticate each other, and every trade request is signed.
 
-协议见 [PROTOCOL.md](PROTOCOL.md)。
+The protocol is in [PROTOCOL.md](PROTOCOL.md).
 
-## 工作方式
+## How it works
 
-- **连接方向**：EA 是 TCP 客户端，由它主动连接桌面端，因为 MQL5 的 socket 不能监听。桌面端在主进程里监听，默认端口 19500。
-- **数据来源**：MT5 是唯一的来源。桌面端只显示 EA 报告的状态，不做乐观更新。
-- **数量**：一个桌面端同时只接一个账户。EA 只挂在一个图表上，挂哪个图表都可以。
+- **Direction:** the EA is the TLS client and dials the Desktop, because MQL5 sockets cannot listen. The Desktop listens in its main process, by default on `127.0.0.1:19500`.
+- **Usual setup:** MT5 and the Desktop run on the same computer. MT5 on another computer in the LAN works too; see step 5 of [Installation](#installation).
+- **Source of truth:** MT5. The Desktop shows only what the EA reports. It makes no optimistic updates, and keeps no record of trade requests.
+- **One account:** a Desktop serves one account at a time. The EA runs on one chart, any chart.
 
 ```
 MQL5/
-  Experts/DshBridge.mq5          EA 入口：参数、连接文件、定时器
-  Include/DshBridge/Json.mqh     JSON 解析和生成
-  Include/DshBridge/Transport.mqh  TCP 连接，按行收发 UTF-8
-  Include/DshBridge/Protocol.mqh   协议信封
-  Include/DshBridge/Account.mqh    system.status 和 account.snapshot
-  Include/DshBridge/Time.mqh       服务器时间和 UTC 的换算
-  Include/DshBridge/Market.mqh     品种目录、报价和 K 线的订阅、历史 K 线
-  Include/DshBridge/Positions.mqh  持仓和挂单
-  Include/DshBridge/History.mqh    历史订单和成交
-  Include/DshBridge/Bridge.mqh     会话：握手、应答、心跳、推送变化、重连、自重载
-  Indicators/DshBridgeLoader.mq5   在后台下载更早的历史 K 线，EA 把它作为资源嵌入
+  Experts/DshBridge.mq5            EA entry: inputs, connection file, timer
+  Include/DshBridge/Json.mqh       JSON parsing and writing
+  Include/DshBridge/Crypto.mqh     SHA-256, HMAC-SHA256, nonces and the start-up self-test
+  Include/DshBridge/Transport.mqh  TLS connection, UTF-8 lines in and out
+  Include/DshBridge/Protocol.mqh   protocol envelopes
+  Include/DshBridge/Account.mqh    system.status and account.snapshot
+  Include/DshBridge/Time.mqh       server time and UTC
+  Include/DshBridge/Market.mqh     symbol catalogue, quote and bar subscriptions, history bars
+  Include/DshBridge/Positions.mqh  positions and pending orders
+  Include/DshBridge/History.mqh    history orders and deals
+  Include/DshBridge/Journal.mqh    trade request journal: each request runs at most once
+  Include/DshBridge/Trade.mqh      place, close, modify and cancel; order.result and symbol.info
+  Include/DshBridge/Bridge.mqh     session: handshake, signature checks, answers, heartbeat, pushes, reconnect, self-reload
+  Indicators/DshBridgeLoader.mq5   downloads older history bars in the background; the EA embeds it as a resource
 ```
 
-源码只用 ASCII 字符，换行是 CRLF。
+The sources use ASCII only, with CRLF line endings.
 
-## 安装
+## Installation
 
-1. **找到数据目录**：在 MT5 里点「文件 → 打开数据文件夹」。
-2. **复制文件**：
-   - `MQL5/Experts/DshBridge.mq5` 复制到数据目录的 `MQL5\Experts\`。
-   - `MQL5/Include/DshBridge/` 整个目录复制到数据目录的 `MQL5\Include\DshBridge\`。
-   - `MQL5/Indicators/DshBridgeLoader.mq5` 复制到数据目录的 `MQL5\Indicators\`。
-3. **编译**：先编译 `DshBridgeLoader.mq5`，再编译 `DshBridge.mq5`，因为 EA 会把这个指标嵌入自己。在 MetaEditor 里依次打开，各按一次 F7。也可以用命令行，在 PowerShell 里运行：
+1. **Find the data folder:** in MT5, choose File → Open Data Folder.
+2. **Copy the files:**
+   - `MQL5/Experts/DshBridge.mq5` to `MQL5\Experts\` in the data folder.
+   - The whole `MQL5/Include/DshBridge/` folder to `MQL5\Include\DshBridge\` in the data folder.
+   - `MQL5/Indicators/DshBridgeLoader.mq5` to `MQL5\Indicators\` in the data folder.
+3. **Compile:** first `DshBridgeLoader.mq5`, then `DshBridge.mq5`, because the EA embeds the indicator. Open each in MetaEditor and press F7. Or compile from PowerShell:
 
    ```powershell
    foreach ($source in @("Indicators\DshBridgeLoader.mq5", "Experts\DshBridge.mq5")) {
-     $p = Start-Process -FilePath "<MT5 安装目录>\metaeditor64.exe" -Wait -PassThru -ArgumentList @(
-       "/compile:`"<数据目录>\MQL5\$source`"", "/log:`"$env:TEMP\dshbridge.log`"")
+     $p = Start-Process -FilePath "<MT5 install folder>\metaeditor64.exe" -Wait -PassThru -ArgumentList @(
+       "/compile:`"<data folder>\MQL5\$source`"", "/log:`"$env:TEMP\dshbridge.log`"")
      Get-Content "$env:TEMP\dshbridge.log" -Encoding Unicode | Select-Object -Last 1
    }
    ```
 
-   - **结果**：每个文件的最后一行都应是 `0 errors, 0 warnings`。日志是 UTF-16 编码。退出码 1 表示编译成功。
-   - **指标不用挂**：`DshBridgeLoader` 不需要拖到图表上，EA 会在需要时自己启动它。
-   - **路径**：路径里有空格时要加引号。
-   - **更新已挂的 EA**：命令行编译不会通知正在运行的终端，图表上的 EA 仍是旧版本。要先把它从图表移除，再重新挂上。
-     - 从 1.1.0 起，桌面端主进程可以发送 `system.reload`，让 EA 从磁盘重新加载自己，不用手动重挂。EA 借助模板 `MQL5\Profiles\Templates\DshBridgeReload.tpl` 完成重载。它目前只供开发调试使用，界面上没有入口。
-     - 从 1.0.0 升级时，仍要手动重挂一次。
-4. **允许 EA 连接桌面端**：打开「工具 → 选项 → EA 交易」，勾选「允许 WebRequest 的 URL 列表」，把桌面端的地址加进去，例如 `10.0.0.9`。桌面端和 MT5 在同一台电脑上时，加入 `127.0.0.1`。
-5. **配置桌面端**：打开桌面端「设置」里的「MT5 连接」。
-   - 打开「启用 MT5 连接」。默认就是开的。
-   - MT5 在另一台电脑上时：打开「允许局域网连接」，再在「允许连接的 EA 地址」里填 MT5 电脑的 IP，例如 `10.0.0.13`。
-   - 复制「EA 令牌」。
-6. **把连接信息交给 EA**，两种方式任选一种：
-   - **EA 参数**：`DesktopHost`、`DesktopPort`、`Token`。
-   - **连接文件**：`MQL5\Files\DshBridge\connection.txt`，参数留空时读取它。`#` 开头的行是注释。
+   - **Result:** the last line for each file should be `0 errors, 0 warnings`. The log is UTF-16. Exit code 1 means the compile succeeded.
+   - **The indicator needs no chart:** do not attach `DshBridgeLoader`; the EA starts it when it needs it.
+   - **Paths:** quote paths that contain spaces.
+   - **Updating a running EA:** a command-line compile does not notify the running terminal, so the chart keeps the old EA. Remove the EA from its chart and attach it again.
+     - Since 1.1.0, the Desktop main process can send `system.reload`, which makes the EA load itself again from disk, through the template `MQL5\Profiles\Templates\DshBridgeReload.tpl`. It is for development only; the UI has no button for it.
+     - **Upgrading from 1.1.0 or older to 1.2.0:** the old EA cannot speak TLS, so it cannot connect to the new Desktop, and the new Desktop cannot reload it. After compiling, remove the EA from its chart and attach it again, once.
+4. **Let the EA reach the Desktop:** in Tools → Options → Expert Advisors, check *Allow WebRequest for listed URL* and add the Desktop's address. This is the only address list to set up; the Desktop keeps none.
+   - same computer: `127.0.0.1`. MT5 needs the entry even for its own computer;
+   - Desktop on another computer: that computer's IP, for example `10.0.0.9`.
+5. **Configure the Desktop:** open Settings → MT5 connection in the Desktop.
+   - Turn on *Enable the MT5 connection*. It is on by default.
+   - On the same computer, change nothing else: by default the Desktop accepts connections from this computer only.
+   - With MT5 on another computer: turn on *Allow LAN connections*. The Desktop then accepts an EA from any computer once it proves the token, so there is no address to enter.
+   - Copy the *EA token*.
+6. **Give the EA the connection details,** in either of two ways:
+   - **EA inputs:** `DesktopHost`, `DesktopPort`, `Token`.
+   - **Connection file:** `MQL5\Files\DshBridge\connection.txt`, read when the inputs are empty. Lines starting with `#` are comments.
 
      ```
-     host=10.0.0.9
+     host=127.0.0.1
      port=19500
-     token=<设置页里复制的令牌>
+     token=<the token copied from Settings>
      ```
 
-   - **优先级**：参数优先于文件。两边都没填时，EA 连接 `127.0.0.1:19500`。
-   - **何时生效**：EA 只在启动时读取连接文件。改了文件之后，要把 EA 从图表移除再重新挂上。
-7. **挂上 EA**：在「导航器 → EA 交易」里，把 DshBridge 拖到任意一个图表上。
+   - **Precedence:** inputs win over the file. With neither address nor port set, the EA dials `127.0.0.1:19500`, so on the same computer the token is all it needs.
+   - **When it applies:** the EA reads the connection file only when it starts. After changing the file, remove the EA from its chart and attach it again.
+7. **Attach the EA:** drag DshBridge from Navigator → Expert Advisors onto any chart.
+8. **Allow algo trading** (needed for trading): turn on the *Algo Trading* button in MT5's toolbar, and check *Allow Algo Trading* on the Common tab of the EA's properties. Watching the markets needs neither. The connection details in the Desktop show both, and the order ticket says which one is off.
 
-几秒之内，桌面端行情页底部的连接标签会变成「已连接」：
+Within a few seconds, the connection badge at the bottom of the market page turns to *Connected*:
 
-- **账户**：账户 Tab 显示的账户和资金，应与 MT5「交易」窗口一致。
-- **行情**：行情页换成经纪商的品种、报价和 K 线。
-- **交易数据**：持仓、挂单和历史与 MT5 一致。
+- **Account:** the account and funds on the Account tab match MT5's Trade window.
+- **Markets:** the market page shows the broker's symbols, quotes and bars.
+- **Trading data:** positions, pending orders and history match MT5.
+- **Connection security:** Settings → MT5 connection shows *TLS encrypted · certificate fingerprint*.
 
-**算法交易权限**：工具栏的「算法交易」按钮，和 EA 属性里的「允许算法交易」，到阶段 3 下单时才必须打开。阶段 1 和阶段 2 只读取数据，不需要它们。这两项的状态会显示在桌面端的连接详情里。
+## Trading
 
-## 行情和图表
+- **Trading risk warning:** before the first trade, the Desktop shows the *Trading risk warning and disclaimer*. Trading starts once the user checks the box and agrees.
+  - It applies alike to demo, contest and real accounts: once agreed, all of them trade, and a real account trades real money.
+  - Agreeing does not carry out the action that brought up the warning; the user repeats it.
+  - When the warning changes, the user agrees again.
+  - Settings → MT5 connection shows the warning and withdraws the agreement. After withdrawing, the user cannot trade, but can still watch the markets.
+- **Account type:** the order ticket tags the account beside the submit button: *Real*, *Demo* or *Contest*. The real tag stands out. Check it before every order.
+- **What it does:**
+  - Orders: market, limit and stop orders, with lots, take profit and stop loss.
+  - Modify: a position's take profit and stop loss; a pending order's price, take profit and stop loss.
+  - Cancel pending orders.
+  - Close: a position in whole or in part, typing the lots in the position's row; by symbol or all positions, through a dialog that lists them with their total floating profit and then closes them one by one.
+- **Checks:**
+  - The order ticket checks the symbol's rules, which MT5 reports live: lots, the side of the market a pending price and the stops are on, the stops level, the symbol's trade mode and the order types it takes.
+  - The EA checks the account, the permissions, the symbol's rules and the ticket, then runs `OrderCheck`, which checks the margin and the rest without trading. Lots and prices must sit on the symbol's lot step and tick size; the EA never adjusts them.
+  - The broker's trade server decides last. The Desktop shows the reason of a refusal.
+- **Order comment:** orders placed from the Desktop carry the comment `dsh:` and the first 8 characters of the request id, so they stand out in MT5. Some brokers rewrite comments.
+- **No duplicate orders:**
+  - One trade request at a time. Once a request is sent, its button stays off until the outcome arrives.
+  - Each action has a new request id. The EA journals ids and runs each id at most once.
+  - Nothing is ever resent on its own.
+- **Unconfirmed outcome:** a request without an answer within 30 seconds, or whose connection drops while it waits, shows *Outcome unconfirmed*.
+  - The request is not resent. The Desktop ends the connection. The EA reconnects only after MT5 has finished the request, and the positions and orders then show MT5's actual state.
+  - Check the positions and the history to see whether the trade went through, then decide what to do.
+- **Request journal:** the EA records each trade request and its outcome in `MQL5\Files\DshBridge\requests.log` in MT5's data folder, keeping the latest 1,000. The Desktop keeps no record of trade requests.
+- **One EA per terminal:** a running EA holds the journal file. A second DshBridge in the same terminal stays offline.
 
-- **自选列表**：第一次连上某个交易服务器时，自选列表取 MT5「市场报价」窗口里的品种，顺序也相同。之后，自选列表、图表品种和图表布局按服务器分别保存，和演示数据的也分开。
-- **「市场报价」窗口会变**：桌面端正在看的品种（自选列表和图表），EA 会加入 MT5 的「市场报价」窗口，因为 MT5 只给那里的品种推送报价。EA 不会再移除它们，不需要的可以在 MT5 里手动隐藏。
-- **K 线**：用 bid 价，和 MT5 图表一致。周期是 MT5 原生的 M1、M3、M5、M15、M30、H1、H2、H4、D1、W1。
-- **历史加载**：
-  - **先显示已有的**：打开品种或切换周期时，图表先显示 MT5 本地已有的 K 线，不等更早的历史下载。第一次打开的品种，可能先只显示最近几周。
-  - **后台下载**：本地的 K 线不够一屏时，EA 让终端在后台下载更早的历史。这一屏下载齐了，图表自动重新加载一次。
-  - **往回拖动**：拖到本地历史之外时，图表等这一段下载齐了才显示，所以中间不会缺 K 线。
-  - **不限时间**：下载要多久，取决于 MT5 所在电脑的网络。桌面端会一直等到数据到达，不会因为下载慢就当作没有更早的数据。
-  - **与 MT5 一致**：正在下载的序列，最老的那根 K 线可能缺少更早的数据，例如那一周只有从周三开始的部分。EA 等更早的历史下载下来，才发送这一根，所以图表上的每根 K 线都与 MT5 一致。
-  - **回看上限**：能回看多远，取决于服务器上最早的数据，以及 MT5 选项「图表」页里的最大 K 线数（Max bars in chart）。
-  - **切换周期**：终端正在下载某个品种很多年的历史时，这个品种还没打开过的周期，可能要等下载结束才能显示。
-- **交易服务器断线**：MT5 与交易服务器断开时，自选列表显示「行情已暂停」。重新连上后，终端会补下断线期间的 K 线，图表也会重新加载，与 MT5 保持一致。
-- **时间**：
-  - 桌面端图表按本机时区显示时间，MT5 图表显示服务器时间，所以日内 K 线的时间标签相差两者的时差。例如本机是 UTC+8、服务器是 UTC+2 时，相差 6 小时。同一根 K 线的开高低收相同。
-  - 日线和周线按服务器的日期，和 MT5 一致。
-- **夏令时**：日内 K 线、持仓和成交的时间，都按当前的服务器时区换算。所以服务器切换夏令时之前的日内数据，时间会差 1 小时。日线和周线不受影响。
-- **交易时段**：图表按全天候（24x7）显示，不留休市的空白。自选列表里的开市状态取自 MT5 的交易时段。
+## Markets and charts
 
-## 运行状态
+- **Watchlist:** the first time the Desktop connects to a trade server, the watchlist takes the symbols of MT5's Market Watch window, in the same order. From then on, the watchlist, the chart symbol and the chart layout are kept per server, apart from the demo data's.
+- **Market Watch changes:** the EA adds the symbols the Desktop shows (the watchlist and the chart) to MT5's Market Watch, because MT5 streams quotes only for the symbols there. The EA never removes them; hide the ones you do not need in MT5.
+- **Bars:** bid prices, as on MT5 charts. The timeframes are MT5's own M1, M3, M5, M15, M30, H1, H2, H4, D1 and W1.
+- **History:**
+  - **What is there first:** when you open a symbol or switch timeframes, the chart first shows the bars MT5 already has, without waiting for older history. A symbol opened for the first time may show only the last few weeks at first.
+  - **Background download:** when MT5 has less than a screen of bars, the EA has the terminal download older history in the background. Once that screen is complete, the chart reloads once.
+  - **Scrolling back:** past the history MT5 has, the chart waits until the stretch has downloaded, so no bars are missing in between.
+  - **No time limit:** a download takes as long as the network of MT5's computer needs. The Desktop waits for the data, and never takes a slow download for the end of the history.
+  - **Same as MT5:** the oldest bar of a series that is still downloading may lack its earlier ticks, for example a week that starts on Wednesday. The EA sends that bar only once the history before it is there, so every bar on the chart matches MT5's.
+  - **How far back:** as far as the server's first data, and MT5's *Max bars in chart* on the Charts tab of its options.
+  - **Switching timeframes:** while the terminal downloads many years of a symbol's history, a timeframe of that symbol that was never opened may only show once the download ends.
+- **Broker disconnect:** while MT5 is disconnected from its trade server, the watchlist shows that prices are paused. Once MT5 reconnects, the terminal fills in the missed bars and the chart reloads, matching MT5.
+- **Times:**
+  - The Desktop's chart shows local time, MT5's chart shows server time, so intraday bar labels differ by the difference between the two. For example, with the computer at UTC+8 and the server at UTC+2, they differ by 6 hours. The same bar has the same prices.
+  - Daily and weekly bars follow the server's dates, as in MT5.
+- **Daylight-saving time:** intraday bars, positions and deals are converted with the server's current offset, so intraday data from before the server's last daylight-saving switch is an hour off. Daily and weekly bars are not affected.
+- **Sessions:** the chart runs around the clock (24x7), without gaps for closed markets. The watchlist's open state comes from MT5's trading sessions.
 
-EA 在图表左上角显示当前状态：
+## Status
 
-| 显示 | 含义 |
+The EA shows its state in the top left corner of its chart:
+
+| Text | Meaning |
 |---|---|
-| `Connecting...` | 正在连接桌面端。 |
-| `Connected; authenticating...` | 已连上，正在用令牌验证。 |
-| `Connected: account … on …` | 已连接，正在推送账户。 |
-| `Disconnected: …` 或其他文字 | 失败原因，见下面的排错表。 |
+| `Connecting...` | Connecting to the Desktop. |
+| `Connected over TLS; authenticating...` | Encrypted; the EA and the Desktop are proving the token to each other. |
+| `Connected over TLS: account … on …` | Connected and pushing the account. |
+| An extra line `Trading is off: …` | Connected, but the EA cannot write its request journal, so it cannot trade. Watching the markets still works. |
+| `Disconnected: …` or other text | Why it failed; see [Troubleshooting](#troubleshooting). |
 
-- **日志**：「工具箱 → 专家」日志里，同一种失败只记一次；之后每次连接成功也会记一条。
-- **重连**：连接失败后，EA 依次隔 1、2、4 秒重试，之后每 5 秒一次。令牌错误或桌面端忙时，每 30 秒重试一次。
-- **同步**：桌面端重启、EA 重启或网络恢复后，EA 自动重连，桌面端重新同步。
+- **Log:** the Experts log in MT5's Toolbox records each kind of failure once, and each successful connection.
+- **Reconnecting:** after a failed connection, the EA retries after 1, 2 and 4 seconds, then every 5 seconds. After a token mismatch or a busy Desktop, it retries every 30 seconds.
+- **Sync:** after a Desktop restart, an EA restart or a network outage, the EA reconnects and the Desktop syncs again.
 
-## 排错
+## Troubleshooting
 
-| 现象 | 原因 | 处理 |
+| Symptom | Cause | Fix |
 |---|---|---|
-| `The terminal does not allow this address …` | 错误 4014：桌面端地址不在 WebRequest 列表里。 | 按安装第 4 步添加。 |
-| `Cannot connect to …, error 5272` | 连不上桌面端：桌面端没在运行、端口不对、没开局域网连接，或者被防火墙拦截。 | 查看设置页「MT5 连接」里显示的监听地址。 |
-| `Disconnected: auth_failed: …` | 令牌不对。 | 重新复制令牌。设置页「重新生成」之后，旧令牌立即失效。 |
-| `Disconnected: busy: …` | 另一个账户的 EA 已经连着桌面端。 | 先移除那个 EA。 |
-| `No token: …` | 参数和连接文件里都没有令牌。 | 按安装第 6 步填写。 |
-| 设置页显示「最近拒绝 … 来源地址不在允许列表中」 | EA 所在电脑的 IP 不在白名单里。 | 把这个 IP 加进「允许连接的 EA 地址」。 |
-| 连接详情和设置页提示 EA 版本过旧 | 图表上挂的 EA 早于 1.1.0，只能提供账户和资金。 | 按安装第 2、3 步更新并编译，再把 EA 从图表移除、重新挂上。 |
-| 图表和自选区域一直显示「等待 MT5 行情」 | EA 还没连上，或者还在读取品种目录。 | 看占位文字和连接详情里的原因。 |
-| 图表往回拖到某处就没有更早的 K 线 | 服务器没有更早的数据，或者已经到了 MT5 的最大 K 线数。 | 在 MT5 选项的「图表」页调大最大 K 线数，重启 MT5，再在桌面端切换一次品种后切回来。 |
-| 往回拖动后，更早的 K 线很久才出现 | 终端正在从服务器下载历史，速度取决于网络。 | 等它下载完。如果 MT5 与交易服务器断开了，要等它重新连上。 |
-| 切换周期后，图表变淡，很久才显示新周期 | 终端正在下载这个品种很多年的历史，下载结束前不生成这个周期。 | 等下载结束。 |
-| 编译 EA 时提示找不到 `DshBridgeLoader.ex5` | 还没编译这个指标。 | 先编译 `MQL5\Indicators\DshBridgeLoader.mq5`。 |
-| 不能在策略测试器里运行 | 测试器里没有网络功能。 | 只在实时图表上运行。 |
+| `The terminal does not allow this address …` | Error 4014: the Desktop's address is not in the WebRequest list. | Add it, as in step 4. |
+| `Cannot connect to …, error 5272` | The Desktop cannot be reached: it is not running, the port is wrong, LAN connections are off, or a firewall blocks the port. | Check the listening address in Settings → MT5 connection. |
+| `TLS handshake with … failed, error …` | The Desktop is older than the EA and cannot speak TLS, or another program uses the port. | Update the Desktop, or check the port. |
+| `Disconnected: auth_failed: …` | The EA's token differs from the Desktop's. | Copy the token again. *Regenerate* in Settings invalidates the old token at once. |
+| `Disconnected: The Desktop did not prove the token: …` | The other side could not prove it holds the same token: the tokens differ, or something impersonates the Desktop. | Copy the token again. If the token is right and this persists, check that the EA's address and port really are the Desktop's. |
+| `Disconnected: busy: …` | Another account's EA is connected to the Desktop. | Remove that EA first. |
+| `No token: …` | Neither the inputs nor the connection file hold a token. | Set it, as in step 6. |
+| `The terminal's cryptography failed its self-test …` | The terminal's hash functions give wrong results, so the EA cannot authenticate. | Update the MT5 terminal. |
+| `cannot open DshBridge\requests.log …: DshBridge may already run on another chart …` | Another DshBridge runs in the same terminal. | Keep only one DshBridge. |
+| The status shows `Trading is off: …` | The EA cannot write `MQL5\Files\DshBridge\requests.log`, for example because the disk is full or access is denied. | Fix the cause it names, then remove the EA from its chart and attach it again. |
+| Settings shows *Last refused … TLS handshake failed* | The EA on the chart is older than 1.2.0 and cannot speak TLS. | Update and compile it as in steps 2 and 3, then remove it from its chart and attach it again. |
+| The order ticket says *Orders are unavailable: Algo Trading is off in MT5*, or *"Allow Algo Trading" is off for the EA* | The *Algo Trading* button, or the EA's *Allow Algo Trading*, is off. | Turn it on, as in step 8. |
+| The order ticket says *Read and agree to the trading risk warning before you trade.* | The warning has not been agreed to, or it changed. | Choose *Read and agree*. |
+| A trade shows *Outcome unconfirmed* | The request got no answer within 30 seconds, or the connection dropped while it waited. | Check the positions and the history. The request is never resent; act again yourself if needed. |
+| The chart and watchlist keep showing *Waiting for MT5 market data* | The EA is not connected yet, or still reads the symbol catalogue. | See the reason in the placeholder and in the connection details. |
+| Scrolling back stops with no older bars | The server has no older data, or MT5's *Max bars in chart* is reached. | Raise *Max bars in chart* on the Charts tab of MT5's options, restart MT5, then switch the Desktop's chart to another symbol and back. |
+| Older bars take long to appear after scrolling back | The terminal is downloading history from the server, at the speed of its network. | Wait for the download. If MT5 is disconnected from its trade server, wait until it reconnects. |
+| After a timeframe switch, the chart dims and takes long to show the new timeframe | The terminal is downloading many years of the symbol's history and builds the timeframe only after that. | Wait for the download to end. |
+| Compiling the EA cannot find `DshBridgeLoader.ex5` | The indicator has not been compiled. | Compile `MQL5\Indicators\DshBridgeLoader.mq5` first. |
+| It does not run in the Strategy Tester | The tester has no network. | Run it on a live chart only. |
 
-## 安全
+## Security
 
-- **明文连接**：连接没有加密，所以只在可信的局域网里打开「允许局域网连接」。实盘交易之前会加上 TLS。
-- **令牌**：令牌保存在桌面端用户目录下的 `mt5-bridge.json` 里，只有当前用户能读，不写进偏好设置。
-- **实盘账户**：默认不允许交易。
+- **Encryption:** the EA and the Desktop always use TLS; there is no plain-text fallback. The Desktop's certificate is self-signed and kept with its private key in `mt5-bridge-tls.json` in the Desktop's user folder, readable only by the current user.
+- **Mutual authentication:** the token never crosses the network; it only computes proofs. Each side proves it holds the token, and the proofs bind the certificate fingerprint the EA saw, so a man in the middle can impersonate neither the Desktop nor the EA.
+- **Signed trades:** every trade request is signed with the session key of its connection, and the EA checks the signature before it acts. A request recorded on another connection fails the check when replayed.
+- **Token:** kept in `mt5-bridge.json` in the Desktop's user folder, readable only by the current user, and never in the preferences. Whoever has the token can impersonate either side, so keep it to yourself. If it may have leaked, regenerate it in Settings → MT5 connection; the old token stops working at once.
+- **LAN:** by default the Desktop accepts connections from its own computer only. With *Allow LAN connections*, any computer on the network can reach its port, and only an EA that proves the token gets a session. A computer without the token can still delay the EA's connection by opening connections of its own, so leave LAN connections off when MT5 runs on the same computer.
+- **The computers themselves:** none of this protects a computer running MT5 or the Desktop that is itself compromised.

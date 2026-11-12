@@ -3,13 +3,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { connectionBadge, utcOffsetText } from '../src/client/market/connection.ts'
 import { createMockMarketData } from '../src/client/market/data/mock-market-data.ts'
 import { createMockTrading } from '../src/client/market/data/mock-trading.ts'
-import { createMt5Trading, historyOf as pageHistory, mt5Connection, pendingOrderOf, positionOf } from '../src/client/market/data/mt5-trading.ts'
+import { createMt5Trading, historyOf as pageHistory, mt5Connection, pendingOrderOf, positionOf, tradeResult } from '../src/client/market/data/mt5-trading.ts'
 import { historyRange, type HistorySelection, type TradeRequest } from '../src/client/market/data/trading.ts'
 import type { Mt5Status } from '../src/mt5/contract.ts'
-import { DISABLED, fakeBridge, historyOf, LISTENING, READY, tradingOf, type FakeBridgeOptions } from './market-fake-bridge.ts'
+import { DISABLED, fakeBridge, FILLED, historyOf, LISTENING, READY, tradingOf, type FakeBridgeOptions } from './market-fake-bridge.ts'
 import { DEAL, DEPOSIT, HISTORY_ORDER, ORDER, POSITION } from './mt5-fixtures.ts'
 
-const ORDER_REQUEST: TradeRequest = { ticker: 'EURUSD', side: 'buy', type: 'market', lots: 0.1, price: null, takeProfit: null, stopLoss: null, deviation: 10, comment: '' }
+const ORDER_REQUEST: TradeRequest = { ticker: 'EURUSD', side: 'buy', type: 'market', lots: 0.1, price: null, takeProfit: 1.08, stopLoss: null }
+const ACCOUNT_KEY = { login: '50123456', server: 'Example-Demo' }
 /** Wednesday 2026-11-11 15:00 local time. */
 const NOW = new Date(2026, 10, 11, 15).getTime()
 
@@ -33,19 +34,64 @@ describe('createMt5Trading', () => {
     await vi.waitFor(() => expect(trading.getSnapshot().connection.status).toBe('connected'))
   })
 
-  it('shows the synced MT5 account and refuses trades while sending is not implemented', async () => {
-    const { trading } = provider()
-    await vi.waitFor(() => expect(trading.getSnapshot().account).not.toBeNull())
+  it('shows the synced MT5 account and sends each trade for it, with MT5\'s answer as the result', async () => {
+    const { trading, fake } = provider({ trading: tradingOf() })
+    await vi.waitFor(() => expect(trading.getSnapshot().positions).toHaveLength(1))
     const snapshot = trading.getSnapshot()
     expect(snapshot.account).toEqual({
       login: '50123456', name: 'Demo User', server: 'Example-Demo', company: 'Example Ltd', currency: 'USD', leverage: 500, mode: 'demo',
       accounting: 'hedging', balance: 10_000, credit: 0, equity: 10_012.5, profit: 12.5, margin: 220.4, freeMargin: 9_792.1, marginLevel: 4_542.88,
     })
-    expect(snapshot.connection).toMatchObject({ source: 'mt5', status: 'connected', blocked: ['unsupported'], mt5: READY })
+    expect(snapshot.connection).toMatchObject({ source: 'mt5', status: 'connected', blocked: [], mt5: READY })
     expect(trading.getSnapshot()).toBe(snapshot)
-    await expect(trading.sendOrder(ORDER_REQUEST)).resolves.toEqual({ status: 'blocked', blocked: 'unsupported', retcode: null, message: '', orderTicket: null, price: null })
-    await expect(trading.closePosition('1')).resolves.toMatchObject({ status: 'blocked' })
-    await expect(trading.cancelOrder('1')).resolves.toMatchObject({ status: 'blocked' })
+    await expect(trading.sendOrder(ORDER_REQUEST)).resolves.toEqual({
+      status: 'done', retcode: 10009, code: 'sent', message: 'Request executed', orderTicket: '3002', price: 1.07255, volume: 0.1,
+    })
+    await trading.sendOrder({ ...ORDER_REQUEST, type: 'limit', price: 1.06, stopLoss: 1.05 })
+    await trading.closePosition('1001')
+    await trading.closePosition('1001', 0.05)
+    await trading.modifyPosition('1001', { takeProfit: null, stopLoss: 1.07 })
+    await trading.modifyOrder('2001', { price: 1.065, takeProfit: 1.09, stopLoss: null })
+    await trading.cancelOrder('2001')
+    const held = trading.getSnapshot().positions[0]!.lots
+    expect(fake.bridge.trade.mock.calls.map(([input]) => input)).toEqual([
+      { type: 'order.place', account: ACCOUNT_KEY, symbol: 'EURUSD', side: 'buy', orderType: 'market', volume: 0.1, price: null, sl: null, tp: 1.08 },
+      { type: 'order.place', account: ACCOUNT_KEY, symbol: 'EURUSD', side: 'buy', orderType: 'limit', volume: 0.1, price: 1.06, sl: 1.05, tp: 1.08 },
+      { type: 'position.close', account: ACCOUNT_KEY, symbol: 'EURUSD', ticket: '1001', volume: held },
+      { type: 'position.close', account: ACCOUNT_KEY, symbol: 'EURUSD', ticket: '1001', volume: 0.05 },
+      { type: 'position.modify', account: ACCOUNT_KEY, symbol: 'EURUSD', ticket: '1001', sl: 1.07, tp: null },
+      // Each ticket's symbol comes from the listed position or order.
+      { type: 'order.modify', account: ACCOUNT_KEY, symbol: 'XAUUSD', ticket: '2001', price: 1.065, sl: null, tp: 1.09 },
+      { type: 'order.cancel', account: ACCOUNT_KEY, symbol: 'XAUUSD', ticket: '2001' },
+    ])
+    // A ticket the page no longer lists sends nothing.
+    await expect(trading.closePosition('9999')).resolves.toMatchObject({ status: 'rejected', code: 'no_position' })
+    await expect(trading.cancelOrder('9999')).resolves.toMatchObject({ status: 'rejected', code: 'no_order' })
+    expect(fake.bridge.trade).toHaveBeenCalledTimes(7)
+  })
+
+  it('turns MT5\'s outcomes into results, an unknown one into unconfirmed', async () => {
+    expect(tradeResult({ ...FILLED, status: 'unknown', code: 'timeout', retcode: 0, order: null, deal: null, price: null, volume: null }))
+      .toEqual({ status: 'unconfirmed', retcode: null, code: 'timeout', message: 'Request executed', orderTicket: null, price: null, volume: null })
+    expect(tradeResult({ ...FILLED, status: 'blocked', id: null, blocked: 'disclaimer', code: 'blocked', retcode: 0 })).toMatchObject({ status: 'blocked', blocked: 'disclaimer' })
+    expect(tradeResult({ ...FILLED, status: 'rejected', retcode: 10018, code: 'sent', message: 'Market closed' })).toMatchObject({ status: 'rejected', retcode: 10018 })
+    const { trading, fake } = provider()
+    await vi.waitFor(() => expect(trading.getSnapshot().account).not.toBeNull())
+    fake.bridge.trade.mockRejectedValueOnce(new Error('MT5 bridge: invalid trade request'))
+    await expect(trading.sendOrder(ORDER_REQUEST)).resolves.toMatchObject({ status: 'rejected', message: 'MT5 bridge: invalid trade request' })
+  })
+
+  it('reads a symbol\'s rules from MT5, none without them, and records the disclaimer agreement', async () => {
+    const { trading, fake } = provider()
+    await vi.waitFor(() => expect(trading.getSnapshot().account).not.toBeNull())
+    await expect(trading.rules('EURUSD')).resolves.toEqual({
+      stopsDistance: 0, tradeMode: 'full', orderTypes: ['market', 'limit', 'stop'], marginPerLot: { buy: 214.5, sell: 214.48 },
+    })
+    expect(fake.bridge.symbolInfo).toHaveBeenCalledWith('EURUSD')
+    fake.bridge.symbolInfo.mockRejectedValueOnce(new Error('unknown_symbol'))
+    await expect(trading.rules('NOPE')).resolves.toBeNull()
+    await trading.acceptDisclaimer?.()
+    expect(fake.bridge.acceptDisclaimer).toHaveBeenCalledTimes(1)
   })
 
   it('reports the bridge reasons first and follows status pushes', async () => {
@@ -53,10 +99,11 @@ describe('createMt5Trading', () => {
     const listener = vi.fn()
     trading.subscribe(listener)
     await vi.waitFor(() => expect(trading.getSnapshot().account).not.toBeNull())
-    fake.pushStatus({ ...READY, blocked: ['broker-disconnected', 'real-account-locked'] })
+    fake.pushStatus({ ...READY, blocked: ['broker-disconnected', 'disclaimer'] })
     expect(listener).toHaveBeenCalled()
-    expect(trading.getSnapshot().connection.blocked).toEqual(['broker-disconnected', 'real-account-locked'])
+    expect(trading.getSnapshot().connection.blocked).toEqual(['broker-disconnected', 'disclaimer'])
     await expect(trading.modifyPosition('1', { takeProfit: null, stopLoss: null })).resolves.toMatchObject({ status: 'blocked', blocked: 'broker-disconnected' })
+    expect(fake.bridge.trade).not.toHaveBeenCalled()
     fake.pushStatus(LISTENING)
     expect(trading.getSnapshot()).toMatchObject({ connection: { status: 'disconnected', blocked: ['ea-disconnected'] }, account: null })
   })
@@ -154,16 +201,6 @@ describe('createMt5Trading', () => {
     await vi.waitFor(() => expect(trading.getSnapshot().deals).toHaveLength(2))
     expect(fake.bridge.historyTrades).toHaveBeenCalledTimes(2)
   })
-
-  it('reads no history from an EA that serves the account only', async () => {
-    const outdated: Mt5Status = { ...READY, eaOutdated: true, peer: { ...READY.peer!, eaVersion: '1.0.0' } }
-    const { trading, fake } = provider({ status: outdated })
-    trading.subscribe(() => {})
-    await vi.waitFor(() => expect(trading.getSnapshot().account).not.toBeNull())
-    await new Promise(resolve => setTimeout(resolve, 20))
-    expect(fake.bridge.historyTrades).not.toHaveBeenCalled()
-    expect(connectionBadge(trading.getSnapshot().connection)).toEqual({ key: 'conn.eaOutdated', tone: 'warning' })
-  })
 })
 
 describe('MT5 rows', () => {
@@ -218,7 +255,6 @@ describe('connection labels', () => {
     expect(connectionBadge(mt5Connection({ ...READY, phase: 'syncing' }))).toEqual({ key: 'conn.syncing', tone: 'busy' })
     expect(connectionBadge(mt5Connection(READY))).toEqual({ key: 'conn.ready', tone: 'ok' })
     expect(connectionBadge(mt5Connection({ ...READY, terminal: { ...READY.terminal!, connected: false } }))).toEqual({ key: 'conn.brokerLost', tone: 'warning' })
-    expect(connectionBadge(mt5Connection({ ...READY, eaOutdated: true }))).toEqual({ key: 'conn.eaOutdated', tone: 'warning' })
   })
 
   it('writes server time zones as UTC offsets', () => {

@@ -1,18 +1,26 @@
 /** A renderer MT5 bridge for the market page specs: the test sets its answers and pushes its events. */
 import { vi, type Mock } from 'vitest'
-import type {
-  Mt5Bar, Mt5Catalog, Mt5HistoryBars, Mt5HistoryBarsRequest, Mt5RendererBridge, Mt5Status, Mt5Subscription, Mt5Tick, Mt5TradeEvent,
-  Mt5TradeHistory, Mt5Trading,
+import {
+  MT5_DISCLAIMER_VERSION, type Mt5Bar, type Mt5Catalog, type Mt5HistoryBars, type Mt5HistoryBarsRequest, type Mt5RendererBridge, type Mt5Status,
+  type Mt5Subscription, type Mt5SymbolInfo, type Mt5Tick, type Mt5TradeEvent, type Mt5TradeHistory, type Mt5TradeInput, type Mt5TradeOutcome,
+  type Mt5Trading,
 } from '../src/mt5/contract.ts'
 import {
-  parseAccount, parseBars, parseOrders, parsePositions, parseSymbolsPage, parseTerminalStatus, parseTicks, parseTradeHistory,
+  parseAccount, parseBars, parseOrders, parsePositions, parseSymbolInfo, parseSymbolsPage, parseTerminalStatus, parseTicks, parseTradeHistory,
 } from '../src/mt5/protocol.ts'
-import { ACCOUNT, DEAL, DEPOSIT, HISTORY_ORDER, ORDER, POSITION, SYMBOLS, TERMINAL, WATCH } from './mt5-fixtures.ts'
+import { ACCOUNT, DEAL, DEPOSIT, HISTORY_ORDER, ORDER, POSITION, SYMBOL_INFO, SYMBOLS, TERMINAL, WATCH } from './mt5-fixtures.ts'
 
 export const READY: Mt5Status = {
   phase: 'ready', listen: { host: '0.0.0.0', port: 19500, addresses: ['10.0.0.9'] }, error: null,
-  peer: { address: '10.0.0.13', port: 50123, eaVersion: '1.1.0', connectedAt: 1 },
-  terminal: parseTerminalStatus(TERMINAL), account: parseAccount(ACCOUNT), blocked: [], syncedAt: 2, lastRejection: null, eaOutdated: false,
+  peer: { address: '10.0.0.13', port: 50123, eaVersion: '1.2.0', connectedAt: 1 },
+  terminal: parseTerminalStatus(TERMINAL), account: parseAccount(ACCOUNT), blocked: [], syncedAt: 2, lastRejection: null, tls: { fingerprint: 'f'.repeat(40) },
+  disclaimer: { version: MT5_DISCLAIMER_VERSION, acceptedAt: 1 },
+}
+
+/** What MT5 answers a filled market order. */
+export const FILLED: Mt5TradeOutcome = {
+  status: 'done', id: 'req-1', blocked: null, retcode: 10009, code: 'sent', message: 'Request executed', order: '3002', deal: '4002',
+  price: 1.07255, volume: 0.1, duplicate: false,
 }
 export const LISTENING: Mt5Status = { ...READY, phase: 'listening', peer: null, terminal: null, account: null, blocked: ['ea-disconnected'], syncedAt: null }
 export const DISABLED: Mt5Status = { ...LISTENING, phase: 'disabled', listen: null, blocked: ['bridge-disabled'] }
@@ -51,6 +59,9 @@ export interface FakeBridge {
     historyBars: Mock<(request: Mt5HistoryBarsRequest) => Promise<Mt5HistoryBars>>
     historyTrades: Mock<(range: { from: number; to: number }) => Promise<Mt5TradeHistory>>
     resync: Mock<() => Promise<void>>
+    trade: Mock<(input: Mt5TradeInput) => Promise<Mt5TradeOutcome>>
+    symbolInfo: Mock<(symbol: string) => Promise<Mt5SymbolInfo>>
+    acceptDisclaimer: Mock<() => Promise<void>>
   }
   answerStatus(status: Mt5Status): void
   pushStatus(status: Mt5Status): void
@@ -95,6 +106,10 @@ export function fakeBridge(options: FakeBridgeOptions = {}): FakeBridge {
     onTradeEvents: listen(events),
     historyBars: vi.fn<(request: Mt5HistoryBarsRequest) => Promise<Mt5HistoryBars>>(async () => ({ bars: [], noData: true })),
     historyTrades: vi.fn<(range: { from: number; to: number }) => Promise<Mt5TradeHistory>>(async () => historyOf()),
+    trade: vi.fn<(input: Mt5TradeInput) => Promise<Mt5TradeOutcome>>(async () => FILLED),
+    symbolInfo: vi.fn<(symbol: string) => Promise<Mt5SymbolInfo>>(async () => parseSymbolInfo(SYMBOL_INFO)),
+    acceptDisclaimer: vi.fn(async () => {}),
+    withdrawDisclaimer: vi.fn(async () => {}),
   }
   return {
     bridge,

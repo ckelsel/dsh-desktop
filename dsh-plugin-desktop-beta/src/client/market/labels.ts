@@ -1,7 +1,7 @@
 /** Localized names shared by the market page panels and the chart datafeed. */
 import { ASSET_CLASSES, type MarketSymbol } from './data/market-data.ts'
 import type { Mt5RejectReason } from '../../mt5/contract.ts'
-import type { Deal, DealEntry, HistoryOrderType, Side, TradeBlock, TradeResult } from './data/trading.ts'
+import type { Deal, DealEntry, HistoryOrderType, PendingType, Side, TradeBlock, TradeResult } from './data/trading.ts'
 import type { DatafeedLabels } from './tradingview/datafeed.ts'
 import { zh } from './locales.ts'
 import type { MarketT, Notice } from './page-types.ts'
@@ -65,20 +65,58 @@ export function reasonLabel(t: MarketT, reason: string): string {
   return known(key) ? t(key) : reason
 }
 
+/** Why a pending price is refused: a limit order waits beyond the market, a stop order before it. */
+export function pendingSideText(t: MarketT, side: Side, type: PendingType): string {
+  if (type === 'limit') return t(side === 'buy' ? 'ticket.errorBuyLimit' : 'ticket.errorSellLimit')
+  return t(side === 'buy' ? 'ticket.errorBuyStop' : 'ticket.errorSellStop')
+}
+
 /** Why trades are refused, as a sentence fragment. */
 export const blockText = (t: MarketT, reason: TradeBlock): string => t(`block.${reason}`)
 
 /** Why the MT5 bridge turned a connection away. */
 export const rejectText = (t: MarketT, reason: Mt5RejectReason): string => t(`reject.${reason}`)
 
-/** The notice a trade request's outcome shows. */
-export function resultNotice(t: MarketT, result: TradeResult): { text: string; tone: Notice['tone'] } {
+/**
+ * Why a request was refused: the EA's or the Desktop's reason when it has a name here, else MT5's
+ * return code by name, else MT5's own comment, with the return code to look up.
+ */
+export function refusalText(t: MarketT, result: Pick<TradeResult, 'code' | 'retcode' | 'message'>): string {
+  const code = `code.${result.code ?? ''}`
+  if (known(code)) return t(code)
+  const retcode = `retcode.${String(result.retcode ?? '')}`
+  const reason = known(retcode) ? t(retcode) : result.message
+  if (result.retcode === null) return reason || (result.code ?? '')
+  return reason === '' ? String(result.retcode) : t('result.reasonCode', { reason, retcode: String(result.retcode) })
+}
+
+/** What a request did: `order` places one, `close` closes a position, `modify` changes stops or an order's price, `cancel` deletes an order. */
+export type TradeAction = 'order' | 'close' | 'modify' | 'cancel'
+
+/** TRADE_RETCODE_DONE_PARTIAL: a market order filled only part of its lots. */
+const PARTIAL = 10010
+
+/**
+ * The notice a trade request's outcome shows.
+ * @param format - formats the price and lots of a fill; without it they show as MT5 sent them.
+ */
+export function resultNotice(t: MarketT, result: TradeResult, action: TradeAction = 'order',
+  format?: { price(value: number): string; lots(value: number): string }): { text: string; tone: Notice['tone'] } {
+  const ticket = result.orderTicket ?? ''
   switch (result.status) {
-    case 'done': return { text: t('result.done', { ticket: result.orderTicket ?? '' }), tone: 'success' }
-    case 'placed': return { text: t('result.placed', { ticket: result.orderTicket ?? '' }), tone: 'success' }
-    case 'rejected': return { text: t('result.rejected', { message: result.message || String(result.retcode ?? '') }), tone: 'error' }
+    case 'done': {
+      if (action === 'close') return { text: t('result.closed'), tone: 'success' }
+      if (action === 'modify') return { text: t('result.modified'), tone: 'success' }
+      if (action === 'cancel') return { text: t('result.cancelled'), tone: 'success' }
+      if (result.price === null || result.volume === null) return { text: t('result.done', { ticket }), tone: 'success' }
+      const fill = { ticket, price: format?.price(result.price) ?? String(result.price), lots: format?.lots(result.volume) ?? String(result.volume) }
+      return result.retcode === PARTIAL ? { text: t('result.partial', fill), tone: 'warning' } : { text: t('result.filled', fill), tone: 'success' }
+    }
+    case 'placed': return { text: t('result.placed', { ticket }), tone: 'success' }
+    case 'rejected': return { text: t('result.rejected', { message: refusalText(t, result) }), tone: 'error' }
+    case 'unconfirmed': return { text: t('result.unconfirmed'), tone: 'warning' }
     case 'offline': return { text: t('result.offline'), tone: 'warning' }
-    case 'blocked': return { text: t('result.blocked', { reason: blockText(t, result.blocked ?? 'unsupported') }), tone: 'warning' }
+    case 'blocked': return { text: t('result.blocked', { reason: blockText(t, result.blocked ?? 'syncing') }), tone: 'warning' }
   }
 }
 

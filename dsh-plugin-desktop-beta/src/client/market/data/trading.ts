@@ -150,11 +150,8 @@ export interface HistoryState {
   truncated: boolean
 }
 
-/**
- * Why a provider refuses new trades: an MT5 bridge reason, or `unsupported` while this build
- * sends no trade requests to MT5 yet.
- */
-export type TradeBlock = Mt5BlockReason | 'unsupported'
+/** Why a provider refuses new trades: an MT5 bridge reason. */
+export type TradeBlock = Mt5BlockReason
 
 /** Where the account comes from, whether it is reachable, and whether it takes new trades. */
 export interface TradingConnection {
@@ -185,31 +182,48 @@ export interface TradeRequest extends Brackets {
   lots: number
   /** Pending order price; null for a market order. */
   price: number | null
-  /** Slippage a market order accepts, in points. */
-  deviation: number
-  comment: string
 }
 
 /**
  * Outcome of a request: `done` filled or applied, `placed` a pending order accepted, `rejected`
- * refused by the terminal or the server, `offline` not sent by the demo account, `blocked` not sent
- * because of `blocked` (see `TradingConnection.blocked`).
+ * refused by the terminal, the server or the EA, `unconfirmed` sent without a known outcome (MT5's
+ * positions, orders and history tell; it is never sent again), `offline` not sent by the demo
+ * account, `blocked` not sent because of `blocked` (see `TradingConnection.blocked`).
  */
 export interface TradeResult {
-  status: 'done' | 'placed' | 'rejected' | 'offline' | 'blocked'
+  status: 'done' | 'placed' | 'rejected' | 'unconfirmed' | 'offline' | 'blocked'
   /** Why a `blocked` request was not sent. */
   blocked?: TradeBlock
   /** MT5 `TRADE_RETCODE_*` when the terminal answered. */
   retcode: number | null
+  /** Why the EA or the Desktop refused, or why the outcome is unknown, such as `invalid_volume` or `timeout`. */
+  code: string | null
   /** The terminal's comment, when it gave one. */
   message: string
   orderTicket: string | null
   price: number | null
+  /** Lots filled; fewer than requested after a partial fill. */
+  volume: number | null
+}
+
+/** A symbol's trade rules from MT5, which the order ticket checks before it sends. */
+export interface TradeRules {
+  /** Least distance of stops and pending prices from the market, as a price difference; 0 lets the server decide. */
+  stopsDistance: number
+  tradeMode: 'full' | 'long_only' | 'short_only' | 'close_only' | 'disabled'
+  /** The order types the symbol takes. */
+  orderTypes: readonly OrderType[]
+  /** Margin of one lot at the current price, in the account currency; null when MT5 cannot tell. */
+  marginPerLot: Record<Side, number | null>
 }
 
 export interface TradingProvider {
   getSnapshot(): TradingSnapshot
   subscribe(listener: () => void): () => void
+  /** The symbol's trade rules; null when the provider has none. */
+  rules(ticker: string): Promise<TradeRules | null>
+  /** Record the user's agreement to the trading risk disclaimer; absent where trades need none. */
+  acceptDisclaimer?(): Promise<void>
   sendOrder(request: TradeRequest): Promise<TradeResult>
   /** Close a position or part of it at the market. */
   closePosition(ticket: string, lots?: number): Promise<TradeResult>
@@ -332,6 +346,42 @@ export function pendingPriceValid(side: Side, type: PendingType, price: number, 
   if (!Number.isFinite(price) || price <= 0) return false
   if (type === 'limit') return side === 'buy' ? price < quote.ask : price > quote.bid
   return side === 'buy' ? price > quote.ask : price < quote.bid
+}
+
+/** Why the symbol takes no order of this side and type now: its trade mode, or an order type it lacks. */
+export function tradeModeError(rules: TradeRules, side: Side, type: OrderType): 'tradeDisabled' | 'closeOnly' | 'longOnly' | 'shortOnly' | 'orderType' | null {
+  switch (rules.tradeMode) {
+    case 'disabled': return 'tradeDisabled'
+    case 'close_only': return 'closeOnly'
+    case 'long_only': if (side === 'sell') return 'longOnly'; break
+    case 'short_only': if (side === 'buy') return 'shortOnly'; break
+    case 'full': break
+  }
+  return rules.orderTypes.includes(type) ? null : 'orderType'
+}
+
+/**
+ * Which price sits nearer the market than the symbol's stops level: a pending price, or a stop loss
+ * or take profit. `base` is where the stops are measured from: the pending price, or the price a
+ * market position closes at; `market` is the price a market order of the side fills at.
+ */
+export function stopsDistanceError(rules: TradeRules, type: OrderType, market: number, base: number, brackets: Brackets): 'pendingDistance' | 'stopsDistance' | null {
+  if (rules.stopsDistance <= 0) return null
+  const near = (a: number, b: number): boolean => Math.abs(a - b) < rules.stopsDistance - 1e-9
+  if (type !== 'market' && near(base, market)) return 'pendingDistance'
+  return [brackets.stopLoss, brackets.takeProfit].some(level => level !== null && near(base, level)) ? 'stopsDistance' : null
+}
+
+/**
+ * Whether `lots` of a position holding `held` lots may close: within the symbol's bounds and on its
+ * step, leaving nothing or at least the minimum. The whole position always may.
+ */
+export function closeLotsValid(symbol: Pick<MarketSymbol, 'minLots' | 'lotStep'>, held: number, lots: number): boolean {
+  if (!Number.isFinite(lots)) return false
+  if (Math.abs(lots - held) < 1e-9) return true
+  if (lots < symbol.minLots - 1e-9 || lots > held) return false
+  const steps = lots / symbol.lotStep
+  return Math.abs(steps - Math.round(steps)) < 1e-6 && held - lots > symbol.minLots - 1e-9
 }
 
 /** Whether `lots` is within the symbol's bounds and on its step. */

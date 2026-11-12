@@ -1,15 +1,14 @@
 /** Preferences remain readable when no Host or user plugin can start. */
 import { join } from 'node:path'
 import { DEFAULT_PREFERENCES, type DesktopPreferences } from './desktop-contract.ts'
-import { formatAddressList, parseAddressList } from './mt5/addresses.ts'
 import { atomicJson, readPrivateFile } from './private-files.ts'
-
-/** Longest MT5 address allowlist the preferences hold. */
-const MAX_ADDRESS_LIST = 1024
 
 export function parsePreferences(value: unknown): DesktopPreferences {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid Desktop preferences')
-  const source = value as Record<string, unknown>
+  const source = { ...value as Record<string, unknown> }
+  // An older Beta kept an MT5 address allowlist. The EA's own settings decide where it
+  // connects now, so old preference files stay readable and drop the key.
+  delete source.mt5AllowedAddresses
   if (Object.keys(source).some(key => !(key in DEFAULT_PREFERENCES))) throw new Error('Unknown Desktop preference')
   const result = { ...DEFAULT_PREFERENCES, ...source }
   // Acrylic and Mica were removed like in the original Desktop. Old preference
@@ -32,15 +31,12 @@ export function parsePreferences(value: unknown): DesktopPreferences {
   if (typeof result.mt5Port !== 'number' || !Number.isInteger(result.mt5Port) || result.mt5Port < 1 || result.mt5Port > 65535) {
     throw new Error('The MT5 port must be an integer from 1 through 65535')
   }
-  if (typeof result.mt5AllowedAddresses !== 'string' || result.mt5AllowedAddresses.length > MAX_ADDRESS_LIST) {
-    throw new Error('Invalid Desktop preference: mt5AllowedAddresses')
+  for (const key of ['mt5DisclaimerVersion', 'mt5DisclaimerAcceptedAt'] as const) {
+    if (typeof result[key] !== 'number' || !Number.isSafeInteger(result[key]) || result[key] < 0) throw new Error(`Invalid Desktop preference: ${key}`)
   }
-  const allowlist = parseAddressList(result.mt5AllowedAddresses)
-  if (allowlist.invalid.length > 0) throw new Error(`Not an IPv4 address: ${allowlist.invalid.join(', ')}`)
   // The upstream compatibility client paints an opaque background, so a transparent Linux
   // frame stays invisible. Fail closed to the solid frame exactly like the existing Desktop.
-  return { ...result, linuxMaterial: 'off', jobCompleted: false, jobFailed: false,
-    mt5AllowedAddresses: formatAddressList(allowlist.addresses) } as DesktopPreferences
+  return { ...result, linuxMaterial: 'off', jobCompleted: false, jobFailed: false } as DesktopPreferences
 }
 
 export function portsChanged(previous: DesktopPreferences, next: DesktopPreferences): boolean {

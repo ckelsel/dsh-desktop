@@ -62,6 +62,7 @@ import { createSandboxLaunchReporter, gpuLaunchFailure, lowIntegrityLaunchDialog
 import { pickOutsideProgramDirectory, programDirectory, programDirectoryRefusal, refusedProgramDirectoryOverlap, type ProgramDirectoryOverlap, type ProgramDirectoryPurpose } from './program-directory.ts'
 import { startCrashReporting } from './crash-reporting.ts'
 import { Mt5BridgeRuntime } from './mt5/bridge-runtime.ts'
+import { MT5_DISCLAIMER_VERSION } from './mt5/contract.ts'
 import { installMt5Ipc } from './mt5/mt5-ipc.ts'
 
 // Below Medium integrity Chromium cannot start its GPU process and ends the launch without a word (#1564).
@@ -857,7 +858,9 @@ async function performCommand(input: Record<string, unknown>, type: string, sour
     }
     if (type === 'preferences') {
       if (runtime.safeMode) throw new Error(t('安全模式使用固定的桌面设置。', 'Safe Mode uses fixed desktop settings.'))
-      const preferences = parsePreferences(input.preferences)
+      // Only the disclaimer itself records or withdraws the user's agreement to it.
+      const preferences = { ...parsePreferences(input.preferences),
+        mt5DisclaimerVersion: runtime.preferences.mt5DisclaimerVersion, mt5DisclaimerAcceptedAt: runtime.preferences.mt5DisclaimerAcceptedAt }
       const ports = portsChanged(runtime.preferences, preferences)
       // The Host composes its client layout at startup, so a layout change restarts it like a port change.
       if (ports || layoutChanged(runtime.preferences, preferences)) {
@@ -1434,7 +1437,12 @@ async function main(): Promise<void> {
   runtime.recoveryMode = process.argv.includes(RECOVERY_ARGUMENT)
   runtime.initialize()
   runtime.memory.start()
-  installMt5Ipc(mt5, () => mainWindow)
+  installMt5Ipc(mt5, () => mainWindow, async (accepted) => {
+    if (runtime.safeMode) throw new Error(t('安全模式使用固定的桌面设置。', 'Safe Mode uses fixed desktop settings.'))
+    await runtime.applyPreferences({ ...runtime.preferences,
+      mt5DisclaimerVersion: accepted ? MT5_DISCLAIMER_VERSION : 0, mt5DisclaimerAcceptedAt: accepted ? Date.now() : 0 })
+    await mt5.configure(runtime.preferences, { safeMode: runtime.safeMode })
+  })
   void mt5.configure(runtime.preferences, { safeMode: runtime.safeMode })
     .catch(error => runtime.diagnostics.append(`MT5 bridge did not start: ${String(error)}`, 'warn'))
   void prepareHostEnvironment()

@@ -1,6 +1,6 @@
 /**
- * The Desktop's MT5 bridge: the TCP server configured from the preferences, the terminal state it
- * syncs from the EA, and the trading gate over that state. Every authenticated session is synced
+ * The Desktop's MT5 bridge: the TLS server configured from the preferences, the terminal state it
+ * syncs from the EA, the trading gate over that state, and trade requests. Every authenticated session is synced
  * before it counts as ready: the account (`system.resync`, `system.status`, `account.snapshot`),
  * then, from an EA that serves them, the symbol catalogue, positions, orders, and the page's
  * subscriptions. Events the EA pushes keep the state current afterwards. Every value remembers the
@@ -9,24 +9,28 @@
  * MT5 stays the authority: a disconnected EA clears the account, positions and orders instead of
  * leaving stale figures on screen, and a session that fails to sync is dropped so the EA
  * reconnects and syncs again. Only the catalogue outlives a disconnect, so the page keeps its
- * charts while the quotes pause.
+ * charts while the quotes pause. The Desktop keeps no record of trades either: a request is sent
+ * once, and MT5's positions, orders and history tell what it did.
  */
+import { randomUUID } from 'node:crypto'
 import type { DesktopPreferences } from '../desktop-contract.ts'
-import { parseAddressList } from './addresses.ts'
 import { mt5SecretPath, readMt5Token, writeMt5Token } from './bridge-secret.ts'
 import { Mt5BridgeServer, Mt5RequestError, type Mt5ServerConfig, type Mt5ServerEvent, type Mt5ServerTimings, type Mt5Session } from './bridge-server.ts'
+import { loadMt5TlsIdentity, mt5TlsPath, type Mt5TlsIdentity } from './bridge-tls.ts'
 import {
-  MT5_MIN_EA_VERSION, type Mt5Account, type Mt5Bar, type Mt5Catalog, type Mt5HistoryBars, type Mt5HistoryBarsOptions, type Mt5HistoryBarsRequest,
-  type Mt5Order, type Mt5Position, type Mt5Status, type Mt5Subscription, type Mt5Symbol, type Mt5TerminalStatus,
-  type Mt5Tick, type Mt5TradeEvent, type Mt5TradeHistory, type Mt5Trading,
+  MT5_DISCLAIMER_VERSION, type Mt5Account, type Mt5Bar, type Mt5BlockReason, type Mt5Catalog, type Mt5HistoryBars, type Mt5HistoryBarsOptions,
+  type Mt5HistoryBarsRequest, type Mt5Order, type Mt5Position, type Mt5Status, type Mt5Subscription, type Mt5Symbol, type Mt5SymbolInfo,
+  type Mt5TerminalStatus, type Mt5Tick, type Mt5TradeEvent, type Mt5TradeHistory, type Mt5TradeInput, type Mt5TradeOutcome, type Mt5Trading,
 } from './contract.ts'
 import {
-  compareVersions, parseAccount, parseBars, parseHistoryAnswer, parseOrders, parsePositions, parseSubscribeAnswer,
-  parseSymbolsPage, parseTerminalStatus, parseTicks, parseTradeEvent, parseTradeHistory, type Mt5Parsed, type Mt5Payload,
+  parseAccount, parseBars, parseHistoryAnswer, parseOrders, parsePositions, parseSubscribeAnswer, parseSymbolInfo,
+  parseSymbolsPage, parseTerminalStatus, parseTicks, parseTradeEvent, parseTradeHistory, parseTradeOutcome, tradeBody,
+  type Mt5Parsed, type Mt5Payload,
 } from './protocol.ts'
 import { blockReasons, bridgePhase } from './terminal-state.ts'
 
-export type Mt5Preferences = Pick<DesktopPreferences, 'mt5Enabled' | 'mt5Exposure' | 'mt5Port' | 'mt5AllowedAddresses'>
+export type Mt5Preferences = Pick<DesktopPreferences,
+  'mt5Enabled' | 'mt5Exposure' | 'mt5Port' | 'mt5DisclaimerVersion' | 'mt5DisclaimerAcceptedAt'>
 
 export type Mt5LogLevel = 'debug' | 'info' | 'warn' | 'error'
 export type Mt5BridgeLog = (event: string, fields?: Record<string, string | number | boolean | null>, level?: Mt5LogLevel) => void
@@ -38,7 +42,7 @@ export interface Mt5HistoryTimings {
 }
 
 export interface Mt5BridgeRuntimeOptions {
-  /** Desktop data directory; the token file lives here. */
+  /** Desktop data directory; the token and certificate files live here. */
   home: string
   desktopVersion: string
   /** LAN IPv4 addresses of this machine, shown so the user can enter one in the EA. */
@@ -46,6 +50,8 @@ export interface Mt5BridgeRuntimeOptions {
   log: Mt5BridgeLog
   timings?: Partial<Mt5ServerTimings>
   history?: Partial<Mt5HistoryTimings>
+  /** The longest a trade request waits for its answer; `TRADE_TIMEOUT_MS` by default. */
+  tradeTimeoutMs?: number
   now?: () => number
 }
 
@@ -67,6 +73,8 @@ const SUBSCRIBE_DEBOUNCE_MS = 50
 /** A query of thousands of deals takes the EA a while to serialize. */
 const HISTORY_QUERY_TIMEOUT_MS = 30_000
 const HISTORY_TIMINGS: Readonly<Mt5HistoryTimings> = Object.freeze({ retryMs: 400 })
+/** The longest a trade request waits for its answer; then the session is dropped and the outcome is unknown. */
+const TRADE_TIMEOUT_MS = 30_000
 
 /** Values whose frames are ordered, so a sync answer never replaces a newer event. */
 type Ordered = 'status' | 'account' | 'positions' | 'orders'
@@ -74,12 +82,18 @@ type Ordered = 'status' | 'account' | 'positions' | 'orders'
 const errorText = (error: unknown): string => error instanceof Error ? error.message : String(error)
 const delay = (ms: number): Promise<void> => new Promise(resolve => { setTimeout(resolve, ms) })
 
+/** An outcome the Desktop reports itself, without a trade result from MT5. */
+const localOutcome = (status: 'rejected' | 'unknown' | 'blocked', id: string | null, code: string, message: string,
+  blocked: Mt5BlockReason | null = null): Mt5TradeOutcome =>
+  ({ status, id, blocked, retcode: 0, code, message, order: null, deal: null, price: null, volume: null, duplicate: false })
+
 export class Mt5BridgeRuntime {
   private readonly server: Mt5BridgeServer
   private readonly listeners = new Set<(status: Mt5Status) => void>()
   private readonly dataListeners = new Set<(event: Mt5DataEvent) => void>()
   private readonly now: () => number
   private readonly history: Mt5HistoryTimings
+  private readonly tradeTimeoutMs: number
   private config: Mt5ServerConfig | undefined
   private enabled = false
   private listen: Mt5Status['listen'] = null
@@ -104,12 +118,18 @@ export class Mt5BridgeRuntime {
   private sentSubscription: string | null = null
   private subscribeTimer: NodeJS.Timeout | undefined
   private tokenValue: string | undefined
+  private identity: Promise<Mt5TlsIdentity> | undefined
+  private fingerprint: string | null = null
+  private disclaimer: Mt5Status['disclaimer'] = null
+  /** A trade request is waiting for its answer; the next waits for it to finish. */
+  private tradeInFlight = false
   private snapshot: Mt5Status
   private published = ''
 
   constructor(private readonly options: Mt5BridgeRuntimeOptions) {
     this.now = options.now ?? Date.now
     this.history = { ...HISTORY_TIMINGS, ...options.history }
+    this.tradeTimeoutMs = options.tradeTimeoutMs ?? TRADE_TIMEOUT_MS
     this.server = new Mt5BridgeServer({ desktopVersion: options.desktopVersion, timings: options.timings, now: this.now })
     this.server.subscribe(event => { this.onServerEvent(event) })
     this.snapshot = this.build()
@@ -158,6 +178,9 @@ export class Mt5BridgeRuntime {
 
   /** Apply the preferences: start, move or stop the TCP server. Safe Mode keeps the bridge off. */
   async configure(preferences: Mt5Preferences, options: { safeMode: boolean }): Promise<void> {
+    this.disclaimer = preferences.mt5DisclaimerVersion === MT5_DISCLAIMER_VERSION
+      ? { version: preferences.mt5DisclaimerVersion, acceptedAt: preferences.mt5DisclaimerAcceptedAt }
+      : null
     this.enabled = preferences.mt5Enabled && !options.safeMode
     if (!this.enabled) {
       this.config = undefined
@@ -167,17 +190,39 @@ export class Mt5BridgeRuntime {
       this.publish()
       return
     }
+    let tls: Mt5TlsIdentity
+    try { tls = await this.tlsIdentity() } catch (error) {
+      this.config = undefined
+      this.listenError = `The bridge certificate is unavailable: ${errorText(error)}`
+      await this.server.stop()
+      this.publish()
+      return
+    }
     const config: Mt5ServerConfig = {
       host: preferences.mt5Exposure === 'lan' ? '0.0.0.0' : '127.0.0.1',
       port: preferences.mt5Port,
-      allowedAddresses: parseAddressList(preferences.mt5AllowedAddresses).addresses,
       token: this.token(),
+      tls,
     }
     const moved = this.config === undefined || this.config.host !== config.host || this.config.port !== config.port
     this.config = config
     if (moved) this.listenError = null
     await this.server.start(config)
     this.publish()
+  }
+
+  /** The certificate, read or made once; a failure is retried at the next configure. */
+  private tlsIdentity(): Promise<Mt5TlsIdentity> {
+    this.identity ??= loadMt5TlsIdentity(mt5TlsPath(this.options.home), this.now()).then(({ identity, created }) => {
+      if (created !== undefined) this.options.log('mt5.certificate-created', { reason: created })
+      this.fingerprint = identity.fingerprint
+      return identity
+    }, (error: unknown) => {
+      this.identity = undefined
+      this.options.log('mt5.certificate-failed', { detail: errorText(error) }, 'error')
+      throw error
+    })
+    return this.identity
   }
 
   /** Read the terminal state again; trading stays blocked until it is back in sync. */
@@ -236,6 +281,64 @@ export class Mt5BridgeRuntime {
     this.logSkipped('history.query orders', answer.orders)
     this.logSkipped('history.query deals', answer.deals)
     return { orders: answer.orders.items, deals: answer.deals.items, truncated: answer.truncated }
+  }
+
+  /**
+   * Send a trade request through the open trading gate, one request at a time. It is sent once and
+   * never again, whatever becomes of it. Without an answer in time the session is
+   * dropped: the EA, held up until OrderSend returns, reconnects after it, and the sync reads from
+   * MT5 what the request did before the gate opens again.
+   */
+  async trade(input: Mt5TradeInput): Promise<Mt5TradeOutcome> {
+    const blocked = this.build().blocked[0]
+    const session = this.session
+    if (blocked !== undefined || session === null) {
+      const reason = blocked ?? 'ea-disconnected'
+      return localOutcome('blocked', null, 'blocked', `Trading is blocked: ${reason}`, reason)
+    }
+    if (this.tradeInFlight) return localOutcome('rejected', null, 'busy', 'Another trade request is still waiting for MT5')
+    this.tradeInFlight = true
+    const id = randomUUID()
+    const { log } = this.options
+    log('mt5.trade-sent', { id, type: input.type, symbol: input.symbol })
+    let outcome: Mt5TradeOutcome
+    try {
+      const answer = await this.server.request(input.type, tradeBody(input), { id, signed: true, timeoutMs: this.tradeTimeoutMs, keepAlive: true })
+      try { outcome = parseTradeOutcome(id, answer) } catch (error) {
+        outcome = localOutcome('unknown', id, 'bad_answer', `The EA's answer is unreadable: ${errorText(error)}`)
+      }
+    } catch (error) {
+      outcome = this.tradeFailure(id, session, error)
+    } finally {
+      this.tradeInFlight = false
+    }
+    log('mt5.trade-result', { id, status: outcome.status, retcode: outcome.retcode, code: outcome.code, duplicate: outcome.duplicate },
+      outcome.status === 'unknown' ? 'warn' : 'info')
+    return outcome
+  }
+
+  /** The outcome of a trade request the EA did not answer with a trade result. */
+  private tradeFailure(id: string, session: Mt5Session, error: unknown): Mt5TradeOutcome {
+    const code = error instanceof Mt5RequestError ? error.code : 'failed'
+    switch (code) {
+      case 'timeout':
+        if (this.session?.id === session.id) this.server.disconnect('a trade request got no answer in time')
+        return localOutcome('unknown', id, code, `MT5 did not answer within ${String(this.tradeTimeoutMs / 1000)} s`)
+      case 'disconnected':
+        return localOutcome('unknown', id, code, 'The EA disconnected before it answered')
+      case 'not_connected':
+        // The session ended before the request was written: nothing was sent, as with the gate.
+        return localOutcome('blocked', null, code, 'No EA is connected', 'ea-disconnected')
+      default:
+        // The EA refused the frame without trading: bad_request, bad_signature, or unknown_type from an older EA.
+        return localOutcome('rejected', id, code, errorText(error))
+    }
+  }
+
+  /** A symbol's trade rules, read from MT5 at every call. */
+  async symbolInfo(symbol: string): Promise<Mt5SymbolInfo> {
+    this.marketSession()
+    return parseSymbolInfo(await this.server.request('symbol.info', { symbol }))
   }
 
   /** Make the EA load itself again from disk, for example after it was recompiled. Main process only. */
@@ -395,15 +498,10 @@ export class Mt5BridgeRuntime {
     }
   }
 
-  private outdated(session: Mt5Session): boolean {
-    return compareVersions(session.hello.eaVersion, MT5_MIN_EA_VERSION) < 0
-  }
-
-  /** The session, when its EA serves market data. */
+  /** The session; every EA that passes the protocol 2 handshake serves market data. */
   private marketSession(): Mt5Session {
     const session = this.session
     if (session === null) throw new Mt5RequestError('not_connected', 'No EA is connected')
-    if (this.outdated(session)) throw new Mt5RequestError('ea_outdated', `EA ${session.hello.eaVersion} is older than ${MT5_MIN_EA_VERSION}`)
     return session
   }
 
@@ -424,28 +522,25 @@ export class Mt5BridgeRuntime {
       const account = parseAccount(answer.payload)
       if (!current()) return
       this.setAccount(account, answer.seq)
-      if (!this.outdated(session)) {
-        const catalog = await this.readCatalog(session)
-        if (!current()) return
-        this.setCatalog(catalog)
-        const positions = await this.server.exchange('positions.snapshot')
-        const parsedPositions = parsePositions(positions.payload)
-        if (!current()) return
-        this.setPositions(parsedPositions, positions.seq)
-        const orders = await this.server.exchange('orders.snapshot')
-        const parsedOrders = parseOrders(orders.payload)
-        if (!current()) return
-        this.setOrders(parsedOrders, orders.seq)
-        // The EA keeps its subscriptions across a resync, but a new session starts without any.
-        this.sentSubscription = null
-        await this.sendSubscription()
-        if (!current()) return
-      }
+      const catalog = await this.readCatalog(session)
+      if (!current()) return
+      this.setCatalog(catalog)
+      const positions = await this.server.exchange('positions.snapshot')
+      const parsedPositions = parsePositions(positions.payload)
+      if (!current()) return
+      this.setPositions(parsedPositions, positions.seq)
+      const orders = await this.server.exchange('orders.snapshot')
+      const parsedOrders = parseOrders(orders.payload)
+      if (!current()) return
+      this.setOrders(parsedOrders, orders.seq)
+      // The EA keeps its subscriptions across a resync, but a new session starts without any.
+      this.sentSubscription = null
+      await this.sendSubscription()
+      if (!current()) return
       this.ready = true
       this.syncedAt = this.now()
       log('mt5.synced', { login: account.login, mode: account.tradeMode, brokerConnected: terminal.connected,
         symbols: this.catalogValue?.symbols.length ?? null, positions: this.positions?.length ?? null, orders: this.orders?.length ?? null })
-      if (this.outdated(session)) log('mt5.ea-outdated', { ea: session.hello.eaVersion, required: MT5_MIN_EA_VERSION }, 'warn')
     } catch (error) {
       if (!current()) return
       log('mt5.sync-failed', { detail: errorText(error) }, 'warn')
@@ -479,7 +574,7 @@ export class Mt5BridgeRuntime {
 
   private async flushSubscription(): Promise<void> {
     const session = this.session
-    if (session === null || !this.ready || this.outdated(session)) return
+    if (session === null || !this.ready) return
     try {
       await this.sendSubscription()
     } catch (error) {
@@ -519,11 +614,11 @@ export class Mt5BridgeRuntime {
       peer: session === null ? null : { address: session.address, port: session.port, eaVersion: session.hello.eaVersion, connectedAt: session.connectedAt },
       terminal,
       account,
-      // Real-money trading stays off until the Desktop offers a setting for it.
-      blocked: blockReasons({ phase, terminal, account, allowRealTrading: false }),
+      blocked: blockReasons({ phase, terminal, account, disclaimerAccepted: this.disclaimer !== null }),
       syncedAt: this.syncedAt,
       lastRejection: this.lastRejection,
-      eaOutdated: session !== null && this.outdated(session),
+      tls: this.fingerprint === null ? null : { fingerprint: this.fingerprint },
+      disclaimer: this.disclaimer,
     }
   }
 

@@ -5,12 +5,14 @@
  *
  * The chart and the side panel show the current data source. While MT5 has not sent its symbols
  * they show why instead; when the source changes they mount afresh with that source's preferences.
+ * The order ticket and the trading panel share one trading risk disclaimer dialog.
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import { List, PanelBottom, Ticket, X } from 'lucide-react'
 import { Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
-import { MT5_MIN_EA_VERSION, type Mt5Status } from '../../mt5/contract.ts'
+import type { Mt5Status } from '../../mt5/contract.ts'
+import { Mt5Disclaimer } from '../mt5-disclaimer.tsx'
 import { conversionTickers } from './data/trading.ts'
 import { datafeedLabels } from './labels.ts'
 import { OrderTicket } from './OrderTicket.tsx'
@@ -34,7 +36,6 @@ function StripButton({ label, pressed, onClick, children }: { label: string; pre
 /** Why MT5 market data is not there yet. */
 function waitingText(t: MarketT, status: Mt5Status | null): string {
   if (status === null) return t('source.starting')
-  if (status.eaOutdated) return t('source.outdated', { version: status.peer?.eaVersion ?? '', minimum: MT5_MIN_EA_VERSION })
   switch (status.phase) {
     case 'error': return t('source.error')
     case 'disabled':
@@ -118,6 +119,10 @@ export function MarketPage(props: MarketPageProps) {
     timers.current.add(timer)
   }, [dismiss])
 
+  const [disclaimer, setDisclaimer] = useState(false)
+  const openDisclaimer = useCallback(() => { setDisclaimer(true) }, [])
+  const acceptDisclaimer = trading.acceptDisclaimer?.bind(trading)
+
   const labels = useMemo(() => datafeedLabels(t), [t])
   const chartText = useMemo(() => ({
     loading: t('chart.loading'), missing: t('chart.missing'), missingDetail: t('chart.missingDetail'), retry: t('chart.retry'),
@@ -125,7 +130,8 @@ export function MarketPage(props: MarketPageProps) {
 
   const side = panel === null ? null : !ready ? <Waiting t={t} status={mt5Status} compact /> : panel === 'watchlist'
     ? <Watchlist key={source.key} t={t} market={market} live={source.live} useQuotes={useQuotes} useStore={useStore} actions={actions} accountCurrency={accountCurrency} />
-    : <OrderTicket key={source.key} t={t} market={market} trading={trading} useQuotes={useQuotes} useAccount={useAccount} useStore={useStore} actions={actions} notify={notify} />
+    : <OrderTicket key={source.key} t={t} market={market} trading={trading} useQuotes={useQuotes} useAccount={useAccount} useStore={useStore} actions={actions}
+      notify={notify} onDisclaimer={openDisclaimer} />
 
   return <div className="dshMkPage" data-up={upColor} data-dragging={dragging || undefined} style={{ '--mk-panel-width': `${panelWidth}px` } as CSSProperties}>
     <div ref={mainRef} className="dshMkMain">
@@ -163,7 +169,7 @@ export function MarketPage(props: MarketPageProps) {
         onStep={(delta) => { actions.setBottomHeight(Math.min(bottomMax, bottom - delta)) }}
       />}
       <div className="dshMkBottom" style={bottomOpen ? { height: bottom } : undefined}>
-        <TradePanel t={t} market={market} trading={trading} useAccount={useAccount} useStore={useStore} actions={actions} notify={notify} />
+        <TradePanel t={t} market={market} trading={trading} useAccount={useAccount} useStore={useStore} actions={actions} notify={notify} onDisclaimer={openDisclaimer} />
       </div>
     </div>
     {side !== null && <Splitter
@@ -190,5 +196,10 @@ export function MarketPage(props: MarketPageProps) {
         <PanelBottom size={18} strokeWidth={1.75} />
       </StripButton>
     </nav>
+    <Mt5Disclaimer open={disclaimer} language={language} onClose={() => { setDisclaimer(false) }}
+      onAccept={acceptDisclaimer === undefined ? undefined : async () => {
+        await acceptDisclaimer()
+        notify(t('result.disclaimerAccepted'), 'success')
+      }} />
   </div>
 }

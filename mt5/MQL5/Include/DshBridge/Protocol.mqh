@@ -1,14 +1,14 @@
 //+------------------------------------------------------------------+
-//| DshBridge protocol v1 envelopes (mt5/PROTOCOL.md).               |
-//|   request  {"v":1,"id":...,"type":...,"payload":{...}}                 |
-//|   response {"v":1,"id":...,"type":"response","ok":true,"payload":...}|
-//|            {"v":1,"id":...,"type":"response","ok":false,"error":...} |
-//|   event    {"v":1,"type":...,"payload":{...}}                        |
+//| DshBridge protocol 2 envelopes (mt5/PROTOCOL.md), one per line:   |
+//|   request  {"v":2,"id":...,"type":...,"payload":{...}}            |
+//|   response {"v":2,"id":...,"type":"response","ok":true,"payload":...}
+//|            {"v":2,"id":...,"type":"response","ok":false,"error":...}
+//|   event    {"v":2,"type":...,"payload":{...}}                     |
 //+------------------------------------------------------------------+
 #include "Json.mqh"
 
-#define DSH_PROTOCOL_VERSION 1
-#define DSH_EA_VERSION       "1.1.0"
+#define DSH_PROTOCOL_VERSION 2
+#define DSH_EA_VERSION       "1.2.0"
 
 string DshRequestFrame(const string id, const string type, const string payloadJson)
   {

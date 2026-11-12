@@ -1,6 +1,7 @@
 /**
- * The MT5 bridge's trading gate. A TCP connection alone never opens it: the account state must be
- * in sync, the terminal connected to its trade server, and every permission MT5 reports granted.
+ * The MT5 bridge's trading gate. A connection alone never opens it: the account state must be in
+ * sync, the terminal connected to its trade server, every permission MT5 reports granted, and the
+ * trading risk disclaimer agreed to. Real-money accounts trade like demo accounts once it is.
  */
 import type { Mt5Account, Mt5BlockReason, Mt5BridgePhase, Mt5TerminalStatus } from './contract.ts'
 
@@ -25,8 +26,8 @@ export interface Mt5GateInput {
   phase: Mt5BridgePhase
   terminal: Mt5TerminalStatus | null
   account: Mt5Account | null
-  /** Whether real-money accounts may trade. */
-  allowRealTrading: boolean
+  /** The user agreed to the current trading risk disclaimer. */
+  disclaimerAccepted: boolean
 }
 
 /**
@@ -50,6 +51,6 @@ export function blockReasons(input: Mt5GateInput): Mt5BlockReason[] {
   if (!terminal.eaTradeAllowed) reasons.push('ea-trade-disabled')
   if (!account.tradeAllowed) reasons.push('account-trade-disabled')
   if (!account.tradeExpert) reasons.push('account-expert-disabled')
-  if (account.tradeMode === 'real' && !input.allowRealTrading) reasons.push('real-account-locked')
+  if (!input.disclaimerAccepted) reasons.push('disclaimer')
   return reasons
 }

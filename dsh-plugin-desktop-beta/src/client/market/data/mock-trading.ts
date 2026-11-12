@@ -211,7 +211,7 @@ export function createMockTrading(options: MockTradingOptions): MockTrading {
 
   const offline = async (): Promise<TradeResult> => {
     await new Promise(resolve => setTimeout(resolve, latency))
-    return { status: 'offline', retcode: null, message: '', orderTicket: null, price: null }
+    return { status: 'offline', retcode: null, code: null, message: '', orderTicket: null, price: null, volume: null }
   }
 
   return {
@@ -227,6 +227,7 @@ export function createMockTrading(options: MockTradingOptions): MockTrading {
         if (listeners.size === 0) { stop?.(); stop = undefined }
       }
     },
+    rules: async () => null,
     sendOrder: offline,
     closePosition: offline,
     modifyPosition: offline,

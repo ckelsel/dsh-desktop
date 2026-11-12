@@ -1,14 +1,15 @@
 //+------------------------------------------------------------------+
 //| DshBridge: connects this terminal to DSH Desktop, which then      |
-//| shows the account, quotes, charts, positions and history, and in  |
-//| a later version trades through it.                                |
-//| Attach it to any one chart. The EA dials the Desktop (MQL5        |
-//| sockets cannot listen); add the Desktop's address under           |
-//| Tools > Options > Expert Advisors > Allow WebRequest for listed   |
-//| URL. Protocol: mt5/PROTOCOL.md in the DSH Desktop repository.     |
+//| shows the account, quotes, charts, positions and history, and     |
+//| trades through it.                                                |
+//| Attach it to one chart only. The EA dials the Desktop over TLS    |
+//| (MQL5 sockets cannot listen); add the Desktop's address, usually  |
+//| 127.0.0.1, under Tools > Options > Expert Advisors > Allow        |
+//| WebRequest for listed URL. Protocol: mt5/PROTOCOL.md in the DSH   |
+//| Desktop repository.                                               |
 //+------------------------------------------------------------------+
 #property copyright "DSH Desktop"
-#property version   "1.10"
+#property version   "1.20"
 #property description "Connects this MetaTrader 5 terminal to DSH Desktop."
 #property description "Empty inputs are read from MQL5\\Files\\DshBridge\\connection.txt (host=, port=, token=)."
 

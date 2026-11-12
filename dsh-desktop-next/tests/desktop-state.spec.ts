@@ -33,15 +33,23 @@ it('keeps desktop preferences separate from the Host and validates all IPC-contr
   expect(portsChanged({ ...DEFAULT_PREFERENCES }, { ...DEFAULT_PREFERENCES, port: 3210 })).toBe(true)
 })
 
-it('validates and normalizes the MT5 bridge preferences, whose changes never restart the Host', () => {
-  expect(DEFAULT_PREFERENCES).toMatchObject({ mt5Enabled: true, mt5Exposure: 'loopback', mt5Port: 19500, mt5AllowedAddresses: '' })
+it('validates the MT5 bridge preferences, whose changes never restart the Host', () => {
+  expect(DEFAULT_PREFERENCES).toMatchObject({ mt5Enabled: true, mt5Exposure: 'loopback', mt5Port: 19500 })
   expect(SAFE_MODE_PREFERENCES.mt5Enabled).toBe(false)
-  expect(parsePreferences({ mt5Exposure: 'lan', mt5Port: 19501, mt5AllowedAddresses: ' 10.0.0.13，10.0.0.14;10.0.0.13\n' }))
-    .toMatchObject({ mt5Exposure: 'lan', mt5Port: 19501, mt5AllowedAddresses: '10.0.0.13, 10.0.0.14' })
-  for (const value of [{ mt5Enabled: 'yes' }, { mt5Exposure: 'any' }, { mt5Port: 0 }, { mt5Port: 65536 }, { mt5Port: '19500' }, { mt5Port: 19500.5 },
-    { mt5AllowedAddresses: 1 }, { mt5AllowedAddresses: '1'.repeat(1025) }]) expect(() => parsePreferences(value)).toThrow()
-  expect(() => parsePreferences({ mt5AllowedAddresses: '10.0.0.13, mt5-host, 10.0.0.256' })).toThrow('Not an IPv4 address: mt5-host, 10.0.0.256')
-  const moved = { ...DEFAULT_PREFERENCES, mt5Enabled: false, mt5Exposure: 'lan' as const, mt5Port: 19501, mt5AllowedAddresses: '10.0.0.13' }
+  expect(parsePreferences({ mt5Exposure: 'lan', mt5Port: 19501 })).toMatchObject({ mt5Exposure: 'lan', mt5Port: 19501 })
+  for (const value of [{ mt5Enabled: 'yes' }, { mt5Exposure: 'any' }, { mt5Port: 0 }, { mt5Port: 65536 }, { mt5Port: '19500' }, { mt5Port: 19500.5 }])
+    expect(() => parsePreferences(value)).toThrow()
+  // An older Beta kept an address allowlist; its file still reads, without the key.
+  const old = parsePreferences({ mt5Exposure: 'lan', mt5AllowedAddresses: '10.0.0.13' })
+  expect(old.mt5Exposure).toBe('lan')
+  expect(old).not.toHaveProperty('mt5AllowedAddresses')
+  // Nobody has agreed to the trading risk disclaimer until they do, and Safe Mode never has.
+  expect(DEFAULT_PREFERENCES).toMatchObject({ mt5DisclaimerVersion: 0, mt5DisclaimerAcceptedAt: 0 })
+  expect(SAFE_MODE_PREFERENCES).toMatchObject({ mt5DisclaimerVersion: 0, mt5DisclaimerAcceptedAt: 0 })
+  expect(parsePreferences({ mt5DisclaimerVersion: 1, mt5DisclaimerAcceptedAt: 1_762_000_000_000 })).toMatchObject({ mt5DisclaimerVersion: 1, mt5DisclaimerAcceptedAt: 1_762_000_000_000 })
+  for (const value of [{ mt5DisclaimerVersion: -1 }, { mt5DisclaimerVersion: 1.5 }, { mt5DisclaimerVersion: '1' }, { mt5DisclaimerAcceptedAt: null }])
+    expect(() => parsePreferences(value)).toThrow()
+  const moved = { ...DEFAULT_PREFERENCES, mt5Enabled: false, mt5Exposure: 'lan' as const, mt5Port: 19501 }
   expect(portsChanged(DEFAULT_PREFERENCES, moved)).toBe(false)
   expect(layoutChanged(DEFAULT_PREFERENCES, moved)).toBe(false)
 })

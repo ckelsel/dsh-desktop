@@ -1,22 +1,27 @@
 //+------------------------------------------------------------------+
-//| DshBridge session: connect to the Desktop, authenticate with      |
-//| system.hello, answer the Desktop's requests, ping, and push what  |
+//| DshBridge session: connect to the Desktop over TLS, authenticate  |
+//| both ways (system.hello, system.auth), answer the Desktop's       |
+//| requests (trades among them, Trade.mqh), ping, and push what      |
 //| changes: account state, positions, orders, the subscribed quotes  |
-//| and bars, and trade events. Everything runs from OnTimer, so      |
-//| nothing blocks the terminal beyond one connect attempt.           |
+//| and bars, and trade events.                                       |
+//| Everything runs from OnTimer, so nothing blocks the terminal      |
+//| beyond one connect attempt.                                       |
 //+------------------------------------------------------------------+
 #include "Json.mqh"
+#include "Crypto.mqh"
 #include "Transport.mqh"
 #include "Protocol.mqh"
+#include "Journal.mqh"
 #include "Account.mqh"
 #include "Market.mqh"
 #include "Positions.mqh"
 #include "History.mqh"
+#include "Trade.mqh"
 
 #define DSH_CONNECT_TIMEOUT_MS 1000
-#define DSH_HELLO_TIMEOUT_MS   10000
+#define DSH_HANDSHAKE_TIMEOUT_MS 10000
 //--- A failed connect is retried within 5 s: the Desktop may be starting, or the terminal's
-//--- WebRequest list was just fixed. A refused hello (wrong token, busy) will not change soon.
+//--- WebRequest list was just fixed. A refused handshake (another token, busy) will not change soon.
 #define DSH_BACKOFF_MIN_MS     1000
 #define DSH_BACKOFF_MAX_MS     5000
 #define DSH_REFUSED_RETRY_MS   30000
@@ -31,8 +36,9 @@
 enum ENUM_DSH_STATE
   {
    DSH_STATE_IDLE,        // waiting to (re)connect
-   DSH_STATE_HELLO,       // connected, hello sent
-   DSH_STATE_READY        // authenticated
+   DSH_STATE_HELLO,       // TLS up, hello sent: waiting for the Desktop's proof
+   DSH_STATE_AUTH,        // the Desktop proved the token, auth sent: waiting for the session
+   DSH_STATE_READY        // authenticated both ways
   };
 
 class CDshBridge
@@ -53,6 +59,14 @@ private:
    uint              m_heartbeatMs;
    uint              m_idleMs;
    string            m_helloId;
+   string            m_authId;
+   //--- This connection's nonces, and the key its signed requests use (mt5/PROTOCOL.md).
+   string            m_nonce;
+   string            m_desktopNonce;
+   uchar             m_sessionKey[];
+   //--- Why the cryptography self-test failed; "" when it passed.
+   string            m_selfTest;
+   CDshJournal       m_journal;
    long              m_sequence;
    //--- What the Desktop last received, so only changes are pushed.
    string            m_sentStatusKey;
@@ -124,6 +138,8 @@ private:
       bool wasReady = m_state == DSH_STATE_READY;
       m_transport.Close();
       m_state = DSH_STATE_IDLE;
+      m_desktopNonce = "";
+      ArrayFree(m_sessionKey);
       Forget();
       if(wasReady)
          m_backoff = DSH_BACKOFF_MIN_MS;
@@ -131,12 +147,44 @@ private:
       Report("Disconnected: " + reason);
      }
 
+   //--- Drop a connection whose handshake failed for a reason that will not change in a second.
+   void              Refuse(const string reason)
+     {
+      m_backoff = DSH_REFUSED_RETRY_MS;
+      Drop(reason);
+     }
+
+   //--- The Desktop refused the hello or the auth.
+   void              Refused(CDshJson *frame)
+     {
+      CDshJson *error = frame.Get("error");
+      string code = error == NULL ? "" : error.GetString("code");
+      string message = error == NULL ? "" : error.GetString("message");
+      if(code == "auth_failed" || code == "busy" || code == "unsupported_protocol" || code == "bad_request")
+         Refuse(code + ": " + message);
+      else
+         Drop(code + ": " + message);
+     }
+
    void              Connect(const ulong now)
      {
+      if(m_selfTest != "")
+        {
+         m_nextAttempt = now + DSH_REFUSED_RETRY_MS;
+         Report("The terminal's cryptography failed its self-test (" + m_selfTest + "); the EA cannot authenticate");
+         return;
+        }
       if(m_token == "")
         {
          m_nextAttempt = now + DSH_REFUSED_RETRY_MS;
          Report("No token: set the EA input Token, or put token=... in MQL5\\Files\\DshBridge\\connection.txt");
+         return;
+        }
+      // A journal that failed to open may open now; one another EA holds keeps this one offline.
+      if(!m_journal.IsOpen() && !m_journal.Open() && m_journal.InUse())
+        {
+         m_nextAttempt = now + DSH_REFUSED_RETRY_MS;
+         Report(m_journal.Error());
          return;
         }
       Show("Connecting...");
@@ -150,30 +198,69 @@ private:
       m_state = DSH_STATE_HELLO;
       m_connectedAt = at;
       m_lastReceived = at;
+      m_nonce = DshNonce();
+      m_desktopNonce = "";
+      ArrayFree(m_sessionKey);
       m_helloId = NextId("hello");
+      m_authId = "";
+      // Nothing about the account before the Desktop proves it holds the token.
       CDshJsonObject hello;
-      hello.Str("token", m_token);
       hello.Int("protocol", DSH_PROTOCOL_VERSION);
-      hello.Str("ea_version", DSH_EA_VERSION);
-      hello.Int("terminal_build", TerminalInfoInteger(TERMINAL_BUILD));
-      hello.Str("terminal_name", TerminalInfoString(TERMINAL_NAME));
-      hello.Str("login", IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN)));
-      hello.Str("server", AccountInfoString(ACCOUNT_SERVER));
+      hello.Str("nonce", m_nonce);
       if(Send(DshRequestFrame(m_helloId, "system.hello", hello.Text())))
-         Show("Connected; authenticating...");
+         Show("Connected over TLS; authenticating...");
      }
 
+   //--- The Desktop's answer to the hello: its nonce, and its proof that it holds the token for
+   //--- this connection's nonces and the certificate the EA saw. Then the EA proves its side.
    void              OnHello(CDshJson *frame)
      {
       if(!frame.GetBool("ok"))
         {
-         CDshJson *error = frame.Get("error");
-         string code = error == NULL ? "" : error.GetString("code");
-         string message = error == NULL ? "" : error.GetString("message");
-         // A wrong token or a busy bridge will not change in a second; retry slowly.
-         if(code == "auth_failed" || code == "busy" || code == "unsupported_protocol")
-            m_backoff = DSH_REFUSED_RETRY_MS;
-         Drop(code + ": " + message);
+         Refused(frame);
+         return;
+        }
+      CDshJson *payload = frame.Get("payload");
+      string nonce = payload == NULL ? "" : payload.GetString("nonce");
+      string proof = payload == NULL ? "" : payload.GetString("proof");
+      if(payload == NULL || payload.GetNumber("protocol") != DSH_PROTOCOL_VERSION || !DshIsHex32(nonce) || !DshIsHex32(proof))
+        {
+         Refuse("The Desktop answered the hello without protocol " + IntegerToString(DSH_PROTOCOL_VERSION) + ", a nonce and a proof");
+         return;
+        }
+      string fingerprint = m_transport.Fingerprint();
+      string expected = DshProof(m_token, "desktop", m_nonce, nonce, fingerprint);
+      if(expected == "" || !DshSameText(proof, expected))
+        {
+         Refuse("The Desktop did not prove the token: the tokens differ, or something impersonates the Desktop");
+         return;
+        }
+      string eaProof = DshProof(m_token, "ea", m_nonce, nonce, fingerprint);
+      if(eaProof == "" || !DshProofBytes(m_token, "session", m_nonce, nonce, fingerprint, m_sessionKey))
+        {
+         Refuse("Cannot compute the proof of the token");
+         return;
+        }
+      m_desktopNonce = nonce;
+      m_state = DSH_STATE_AUTH;
+      m_authId = NextId("auth");
+      CDshJsonObject auth;
+      auth.Str("proof", eaProof);
+      auth.Str("ea_version", DSH_EA_VERSION);
+      auth.Int("terminal_build", TerminalInfoInteger(TERMINAL_BUILD));
+      auth.Str("terminal_name", TerminalInfoString(TERMINAL_NAME));
+      auth.Str("login", IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN)));
+      auth.Str("server", AccountInfoString(ACCOUNT_SERVER));
+      auth.Str("instance", m_journal.Instance());
+      Send(DshRequestFrame(m_authId, "system.auth", auth.Text()));
+     }
+
+   //--- The Desktop accepted the EA's proof: the session starts.
+   void              OnAuth(CDshJson *frame)
+     {
+      if(!frame.GetBool("ok"))
+        {
+         Refused(frame);
          return;
         }
       CDshJson *payload = frame.Get("payload");
@@ -188,8 +275,41 @@ private:
       m_backoff = DSH_BACKOFF_MIN_MS;
       m_failure = "";
       Forget();
-      PrintFormat("DshBridge: connected to %s:%u as account %I64d on %s", m_host, m_port, AccountInfoInteger(ACCOUNT_LOGIN), AccountInfoString(ACCOUNT_SERVER));
-      Show("Connected: account " + IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN)) + " on " + AccountInfoString(ACCOUNT_SERVER));
+      PrintFormat("DshBridge: connected over TLS to %s:%u as account %I64d on %s", m_host, m_port, AccountInfoInteger(ACCOUNT_LOGIN), AccountInfoString(ACCOUNT_SERVER));
+      string line = "Connected over TLS: account " + IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN)) + " on " + AccountInfoString(ACCOUNT_SERVER);
+      if(!m_journal.IsOpen())
+        {
+         line += "\nTrading is off: " + m_journal.Error();
+         Print("DshBridge: trading is off: ", m_journal.Error());
+        }
+      Show(line);
+     }
+
+   //--- The body of a signed request, once its MAC proves the Desktop of this session sent it
+   //--- (mt5/PROTOCOL.md). False, with the error answered, when the request is not signed, the
+   //--- MAC does not match, or the body is not an object; nothing of such a request runs.
+   bool              Verified(const string id, const string type, CDshJson *payload, CDshJson &body)
+     {
+      string text = payload == NULL ? "" : payload.GetString("body");
+      string mac = payload == NULL ? "" : payload.GetString("mac");
+      if(text == "" || !DshIsHex32(mac))
+        {
+         Send(DshErrorFrame(id, "bad_request", type + " must be signed: {body, mac}"));
+         return false;
+        }
+      string expected = DshRequestMac(m_sessionKey, id, type, text);
+      if(expected == "" || !DshSameText(mac, expected))
+        {
+         Send(DshErrorFrame(id, "bad_signature", "The signature of " + type + " does not match this session"));
+         return false;
+        }
+      string error;
+      if(!body.Parse(text, error) || !body.IsObject())
+        {
+         Send(DshErrorFrame(id, "bad_request", "The body of " + type + " is not a JSON object: " + error));
+         return false;
+        }
+      return true;
      }
 
    //--- Answer a request whose payload a handler produced, or the error it reported.
@@ -304,6 +424,30 @@ private:
          Reload(id);
          return;
         }
+      if(DshSignedType(type))
+        {
+         CDshJson body;
+         if(!Verified(id, type, payload, body))
+            return;
+         bool ok = DshTrade(m_journal, id, type, GetPointer(body), payload.GetString("body"), answer, code, message);
+         Answer(id, ok, answer, code, message);
+         // OrderSend blocked the timer, so the Desktop's pings wait unread: that is not silence.
+         m_lastReceived = GetTickCount64();
+         m_dirty = true;
+         return;
+        }
+      if(type == "order.result")
+        {
+         bool ok = DshRequestResults(m_journal, payload, answer, code, message);
+         Answer(id, ok, answer, code, message);
+         return;
+        }
+      if(type == "symbol.info")
+        {
+         bool ok = DshSymbolInfo(payload, answer, code, message);
+         Answer(id, ok, answer, code, message);
+         return;
+        }
       Send(DshErrorFrame(id, "unknown_type", "The EA does not serve " + type));
      }
 
@@ -323,9 +467,12 @@ private:
         {
          if(m_state == DSH_STATE_HELLO && id == m_helloId)
             OnHello(GetPointer(frame));
+         else
+            if(m_state == DSH_STATE_AUTH && id == m_authId)
+               OnAuth(GetPointer(frame));
          return;
         }
-      // Events (system.ping included) only keep the session alive in protocol v1.
+      // Events (system.ping included) only keep the session alive.
       if(id == "")
          return;
       CDshJson *payload = frame.Get("payload");
@@ -401,7 +548,7 @@ public:
                      CDshBridge(void) :
                      m_host(""), m_port(0), m_token(""), m_state(DSH_STATE_IDLE), m_nextAttempt(0), m_backoff(DSH_BACKOFF_MIN_MS), m_connectedAt(0),
                      m_lastReceived(0), m_lastSent(0), m_lastCompare(0), m_lastStatusPush(0), m_heartbeatMs(5000), m_idleMs(15000),
-                     m_helloId(""), m_sequence(0), m_sentStatusKey(""), m_sentStatus(""), m_sentAccount(""), m_sentPositions(""), m_sentOrders(""),
+                     m_helloId(""), m_authId(""), m_nonce(""), m_desktopNonce(""), m_selfTest(""), m_sequence(0), m_sentStatusKey(""), m_sentStatus(""), m_sentAccount(""), m_sentPositions(""), m_sentOrders(""),
                      m_dirty(true), m_shown(""), m_failure("") {}
 
    void              Configure(const string host, const uint port, const string token)
@@ -412,6 +559,11 @@ public:
       m_state = DSH_STATE_IDLE;
       m_nextAttempt = 0;
       m_backoff = DSH_BACKOFF_MIN_MS;
+      m_selfTest = DshCryptoSelfTest();
+      if(m_selfTest != "")
+         Print("DshBridge: the cryptography self-test failed: ", m_selfTest);
+      if(!m_journal.Open())
+         Print("DshBridge: ", m_journal.Error());
      }
 
    //--- A trade transaction: the account, positions or orders changed, so compare on the next
@@ -458,10 +610,10 @@ public:
       if(m_state == DSH_STATE_IDLE)
          return;
       now = GetTickCount64();
-      if(m_state == DSH_STATE_HELLO)
+      if(m_state == DSH_STATE_HELLO || m_state == DSH_STATE_AUTH)
         {
-         if(now - m_connectedAt > DSH_HELLO_TIMEOUT_MS)
-            Drop("The Desktop did not answer the hello");
+         if(now - m_connectedAt > DSH_HANDSHAKE_TIMEOUT_MS)
+            Drop("The Desktop did not complete the handshake");
          return;
         }
       if(now - m_lastReceived > m_idleMs)
@@ -485,6 +637,7 @@ public:
    void              Shutdown(void)
      {
       m_transport.Close();
+      m_journal.Close();
       m_state = DSH_STATE_IDLE;
       Comment("");
      }

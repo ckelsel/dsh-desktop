@@ -1,5 +1,5 @@
 /**
- * The MT5 bridge token: a random secret the EA presents in `system.hello`. It lives in its own
+ * The MT5 bridge token: the secret the EA and the Desktop prove to each other, never sent. It lives in its own
  * owner-only file beside the Desktop preferences, never in the preferences or the general renderer
  * state; the settings page reads it through a dedicated IPC call.
  */

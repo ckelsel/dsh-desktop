@@ -214,12 +214,6 @@ describe('createMt5MarketData', () => {
     expect(onReset).toHaveBeenCalledOnce()
   })
 
-  it('waits on an EA that serves the account only', async () => {
-    const { market } = provider({ status: { ...READY, eaOutdated: true }, catalog: null })
-    await settle()
-    expect(market.source()).toMatchObject({ state: 'waiting', live: false })
-  })
-
   it('moves its subscriptions to the demo data and back when the bridge is turned off and on', async () => {
     const { market, fake, demo } = provider()
     await settle()

@@ -5,15 +5,19 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Mt5BridgeRuntime, type Mt5DataEvent, type Mt5Preferences } from '../src/mt5/bridge-runtime.ts'
 import { mt5SecretPath } from '../src/mt5/bridge-secret.ts'
-import type { Mt5HistoryBarsRequest, Mt5Status } from '../src/mt5/contract.ts'
+import { mt5TlsPath } from '../src/mt5/bridge-tls.ts'
+import { atomicJson } from '../src/private-files.ts'
+import { MT5_DISCLAIMER_VERSION, type Mt5HistoryBarsRequest, type Mt5Status, type Mt5TradeInput } from '../src/mt5/contract.ts'
 import { encodeLine } from '../src/mt5/framing.ts'
 import {
-  ACCOUNT, BAR, DEAL, DEPOSIT, EURUSD, FakeEa, HISTORY_ORDER, ORDER, POSITION, TERMINAL, TICK,
+  ACCOUNT, BAR, DEAL, DEPOSIT, EURUSD, FakeEa, HISTORY_ORDER, ORDER, POSITION, SYMBOL_INFO, TERMINAL, testTls, TICK,
 } from './mt5-fixtures.ts'
 
 const TIMINGS = { handshakeMs: 300, heartbeatMs: 60, idleMs: 600, requestMs: 300 }
 /** Port 0 takes an ephemeral port; the preferences parser itself requires 1 through 65535. */
-const PREFERENCES: Mt5Preferences = { mt5Enabled: true, mt5Exposure: 'loopback', mt5Port: 0, mt5AllowedAddresses: '' }
+const PREFERENCES: Mt5Preferences = {
+  mt5Enabled: true, mt5Exposure: 'loopback', mt5Port: 0, mt5DisclaimerVersion: MT5_DISCLAIMER_VERSION, mt5DisclaimerAcceptedAt: 1,
+}
 
 let home: string
 let runtime: Mt5BridgeRuntime
@@ -22,13 +26,16 @@ let logs: { event: string; fields: Record<string, unknown> | undefined; level: s
 let data: Mt5DataEvent[]
 const eas: FakeEa[] = []
 
-beforeEach(() => {
+beforeEach(async () => {
   home = mkdtempSync(join(tmpdir(), 'dsh-mt5-runtime-'))
+  // One certificate for every test: making an RSA key per test would slow the suite down.
+  const { cert, key } = await testTls()
+  atomicJson(mt5TlsPath(home), { cert, key })
   statuses = []
   logs = []
   data = []
   runtime = new Mt5BridgeRuntime({
-    home, desktopVersion: 'DSH Desktop Beta test', lanAddresses: () => ['10.0.0.9'], timings: TIMINGS, history: { retryMs: 20 },
+    home, desktopVersion: 'DSH Desktop Beta test', lanAddresses: () => ['10.0.0.9'], timings: TIMINGS, history: { retryMs: 20 }, tradeTimeoutMs: 900,
     log: (event, fields, level) => { logs.push({ event, fields, level }) },
   })
   runtime.subscribe(status => { statuses.push(status) })
@@ -47,11 +54,12 @@ async function start(preferences: Partial<Mt5Preferences> = {}): Promise<number>
   return port
 }
 
-/** An EA connected with the runtime's own token. */
+/** An EA that logs in with the runtime's own token, unless `token` says otherwise; the other overrides go into its system.auth. */
 async function connect(port: number, overrides: Record<string, unknown> = {}): Promise<FakeEa> {
   const ea = await FakeEa.connect(port)
   eas.push(ea)
-  ea.hello({ token: runtime.token(), ...overrides })
+  const { token, ...auth } = overrides
+  void ea.login({ token: typeof token === 'string' ? token : runtime.token(), auth }).catch(() => {})
   return ea
 }
 
@@ -104,7 +112,7 @@ describe('sessions', () => {
     expect(phases).toEqual(['listening', 'handshaking', 'syncing', 'ready'])
     const ready = runtime.status()
     expect(ready).toMatchObject({
-      peer: { address: '127.0.0.1', eaVersion: '1.0.0' },
+      peer: { address: '127.0.0.1', eaVersion: '1.2.0' },
       terminal: { connected: true, build: 5120, serverUtcOffset: 7200 },
       account: { login: '50123456', tradeMode: 'demo', equity: 10_012.5, marginFree: 9_792.1 },
       blocked: [],
@@ -178,6 +186,21 @@ describe('sessions', () => {
     const ea = await connect(port, { token: 'wrong' })
     await ea.ended()
     await vi.waitFor(() => expect(runtime.status().lastRejection).toMatchObject({ address: '127.0.0.1', reason: 'token' }))
+    // An EA older than 1.2.0 speaks plain TCP.
+    const old = await FakeEa.connectPlain(port)
+    eas.push(old)
+    old.write({ v: 1, id: 'hello-1', type: 'system.hello', payload: { protocol: 1 } })
+    await old.ended()
+    await vi.waitFor(() => expect(runtime.status().lastRejection).toMatchObject({ address: '127.0.0.1', reason: 'tls' }))
+  })
+
+  it('reports the fingerprint of its certificate, which the EA reads from the connection', async () => {
+    const port = await start()
+    const { fingerprint } = await testTls()
+    expect(runtime.status().tls).toEqual({ fingerprint })
+    const ea = await connect(port)
+    expect(ea.fingerprint).toBe(fingerprint)
+    expect(logs.map(log => log.event)).not.toContain('mt5.certificate-created')
   })
 
   it('disconnects the EA when the token is regenerated', async () => {
@@ -206,9 +229,9 @@ describe('sessions', () => {
 })
 
 describe('stage 2', () => {
-  const STAGE2 = { ea_version: '1.1.0' }
+  const STAGE2 = { ea_version: '1.2.0' }
 
-  /** A 1.1.0 EA through a full sync. */
+  /** An EA through a full sync. */
   async function ready(port: number, overrides: Record<string, unknown> = {}): Promise<FakeEa> {
     const ea = await connect(port, { ...STAGE2, ...overrides })
     await ea.syncStage2()
@@ -220,7 +243,7 @@ describe('stage 2', () => {
     const port = await start()
     const many = Array.from({ length: 1001 }, (_, index) => ({ ...EURUSD, name: `SYM${String(index).padStart(4, '0')}` }))
     const ea = await connect(port, STAGE2)
-    await ea.sync()
+    await ea.syncAccount()
     const pages = await ea.serveCatalog([EURUSD, ...many], ['SYM0003', 'EURUSD', 'GONE'])
     expect(pages.map(page => page.payload)).toEqual([{ offset: 0, limit: 500 }, { offset: 500, limit: 500 }, { offset: 1000, limit: 500 }])
     await ea.serve('positions.snapshot', { positions: [POSITION] })
@@ -229,7 +252,7 @@ describe('stage 2', () => {
     const subscribe = await ea.serve('market.subscribe', { unknown: [] })
     expect(subscribe.payload).toEqual({ quotes: [], bars: [] })
     await vi.waitFor(() => expect(runtime.status().phase).toBe('ready'))
-    expect(runtime.status()).toMatchObject({ eaOutdated: false, peer: { eaVersion: '1.1.0' }, blocked: [] })
+    expect(runtime.status()).toMatchObject({ peer: { eaVersion: '1.2.0' }, blocked: [] })
     const catalog = runtime.catalog()
     expect(catalog?.server).toBe('Example-Demo')
     expect(catalog?.symbols).toHaveLength(1002)
@@ -240,28 +263,15 @@ describe('stage 2', () => {
     expect(logs).toContainEqual(expect.objectContaining({ event: 'mt5.synced', fields: expect.objectContaining({ symbols: 1002, positions: 1, orders: 1 }) }))
   })
 
-  it('serves only the account to an EA older than 1.1.0, and says it is out of date', async () => {
-    const port = await start()
-    const ea = await connect(port)
-    await ea.sync()
-    await vi.waitFor(() => expect(runtime.status().phase).toBe('ready'))
-    expect(runtime.status()).toMatchObject({ eaOutdated: true, account: { login: '50123456' } })
-    expect(runtime.catalog()).toBeNull()
-    expect(runtime.trading()).toBeNull()
-    expect(ea.frames.map(frame => frame.type)).not.toContain('symbols.list')
-    await expect(runtime.historyBars({ symbol: 'EURUSD', timeframe: 'M5', to: 1, count: 1 })).rejects.toMatchObject({ code: 'ea_outdated' })
-    expect(logs).toContainEqual(expect.objectContaining({ event: 'mt5.ea-outdated', level: 'warn' }))
-  })
-
   it('never lets a sync answer replace a value the EA pushed after it', async () => {
     const port = await start()
     const ea = await connect(port, STAGE2)
-    await ea.sync()
+    await ea.syncAccount()
     await ea.serveCatalog()
     // The answer and a newer push arrive in one read, before the sync gets to use the answer.
     const positions = await ea.serve('positions.snapshot')
-    ea.writeRaw(`${encodeLine({ v: 1, id: positions.id, type: 'response', ok: true, payload: { positions: [POSITION] } }).toString()}${
-      encodeLine({ v: 1, type: 'positions.snapshot', payload: { positions: [] } }).toString()}`)
+    ea.writeRaw(`${encodeLine({ v: 2, id: positions.id, type: 'response', ok: true, payload: { positions: [POSITION] } }).toString()}${
+      encodeLine({ v: 2, type: 'positions.snapshot', payload: { positions: [] } }).toString()}`)
     // An older push, then the answer: the answer stands.
     const orders = await ea.serve('orders.snapshot')
     ea.event('orders.snapshot', { orders: [] })
@@ -371,5 +381,121 @@ describe('stage 2', () => {
     const reload = runtime.reload()
     await ea.serve('system.reload', {})
     await expect(reload).resolves.toBeUndefined()
+  })
+})
+
+describe('trades', () => {
+  const ACCOUNT_KEY = { login: '50123456', server: 'Example-Demo' }
+  const BUY: Mt5TradeInput = { type: 'order.place', account: ACCOUNT_KEY, symbol: 'EURUSD', side: 'buy', orderType: 'market', volume: 0.01, price: null, sl: 1.07, tp: null }
+  const DONE = { status: 'done', retcode: 10009, code: 'sent', message: 'Request executed', order: '3002', deal: '4002', price: 1.07255, volume: 0.01, duplicate: false }
+  const sent = (ea: FakeEa): number => ea.frames.filter(frame => frame.type === 'order.place').length
+
+  async function ready(port: number): Promise<FakeEa> {
+    const ea = await connect(port)
+    await ea.sync()
+    await vi.waitFor(() => expect(runtime.status().phase).toBe('ready'))
+    return ea
+  }
+
+  it('sends each request once, signed and under a new id, and returns what MT5 did', async () => {
+    const ea = await ready(await start())
+    expect(runtime.status().disclaimer).toEqual({ version: MT5_DISCLAIMER_VERSION, acceptedAt: 1 })
+    const outcome = runtime.trade(BUY)
+    const request = await ea.serve('order.place')
+    expect(request.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u)
+    expect(ea.signed(request)).toEqual({
+      valid: true, body: { account: ACCOUNT_KEY, symbol: 'EURUSD', side: 'buy', type: 'market', volume: 0.01, price: null, sl: 1.07, tp: null },
+    })
+    ea.respond(request.id!, DONE)
+    await expect(outcome).resolves.toEqual({ ...DONE, id: request.id, blocked: null })
+    const again = runtime.trade(BUY)
+    const second = await ea.serve('order.place')
+    expect(second.id).not.toBe(request.id)
+    ea.respond(second.id!, { ...DONE, status: 'rejected', retcode: 10018, code: 'sent', message: 'Market is closed', order: null, deal: null, price: null, volume: null })
+    await expect(again).resolves.toMatchObject({ status: 'rejected', retcode: 10018, order: null })
+    expect(sent(ea)).toBe(2)
+  })
+
+  it.each([
+    [{ type: 'position.close', account: ACCOUNT_KEY, symbol: 'EURUSD', ticket: '1001', volume: 0.01 }, { ticket: '1001', volume: 0.01 }],
+    [{ type: 'position.modify', account: ACCOUNT_KEY, symbol: 'EURUSD', ticket: '1001', sl: null, tp: 1.08 }, { ticket: '1001', sl: null, tp: 1.08 }],
+    [{ type: 'order.modify', account: ACCOUNT_KEY, symbol: 'EURUSD', ticket: '2001', price: 1.06, sl: 1.05, tp: null }, { ticket: '2001', price: 1.06, sl: 1.05, tp: null }],
+    [{ type: 'order.cancel', account: ACCOUNT_KEY, symbol: 'EURUSD', ticket: '2001' }, { ticket: '2001' }],
+  ] as const)('sends %o with the body the EA reads', async (input, fields) => {
+    const ea = await ready(await start())
+    const outcome = runtime.trade(input)
+    const request = await ea.serve(input.type)
+    expect(ea.signed(request)).toEqual({ valid: true, body: { account: ACCOUNT_KEY, symbol: 'EURUSD', ...fields } })
+    ea.respond(request.id!, DONE)
+    await expect(outcome).resolves.toMatchObject({ status: 'done' })
+  })
+
+  it('sends nothing while the gate is closed, and needs the current disclaimer agreed to', async () => {
+    await expect(runtime.trade(BUY)).resolves.toMatchObject({ status: 'blocked', id: null, blocked: 'bridge-disabled' })
+    const port = await start({ mt5DisclaimerVersion: 0, mt5DisclaimerAcceptedAt: 0 })
+    await expect(runtime.trade(BUY)).resolves.toMatchObject({ status: 'blocked', blocked: 'ea-disconnected' })
+    const ea = await ready(port)
+    expect(runtime.status()).toMatchObject({ disclaimer: null, blocked: ['disclaimer'] })
+    await expect(runtime.trade(BUY)).resolves.toMatchObject({ status: 'blocked', blocked: 'disclaimer' })
+    // A disclaimer this build does not know is not the one the user agreed to.
+    await start({ mt5DisclaimerVersion: MT5_DISCLAIMER_VERSION + 1, mt5DisclaimerAcceptedAt: 5 })
+    expect(runtime.status()).toMatchObject({ disclaimer: null, blocked: ['disclaimer'] })
+    await start({ mt5DisclaimerAcceptedAt: 7 })
+    expect(runtime.status()).toMatchObject({ disclaimer: { version: MT5_DISCLAIMER_VERSION, acceptedAt: 7 }, blocked: [] })
+    expect(sent(ea)).toBe(0)
+  })
+
+  it('takes one request at a time', async () => {
+    const ea = await ready(await start())
+    const first = runtime.trade(BUY)
+    const request = await ea.serve('order.place')
+    await expect(runtime.trade(BUY)).resolves.toMatchObject({ status: 'rejected', id: null, code: 'busy' })
+    ea.respond(request.id!, DONE)
+    await expect(first).resolves.toMatchObject({ status: 'done' })
+    const next = runtime.trade(BUY)
+    ea.respond((await ea.serve('order.place')).id!, DONE)
+    await expect(next).resolves.toMatchObject({ status: 'done' })
+    expect(sent(ea)).toBe(2)
+  })
+
+  it('keeps a silent EA connected while it trades, then drops it unanswered and never sends the request again', async () => {
+    const port = await start()
+    const ea = await ready(port)
+    const started = Date.now()
+    const outcome = runtime.trade(BUY)
+    const request = await ea.serve('order.place')
+    // Silence past the idle timeout does not end the session while the trade waits.
+    await expect(outcome).resolves.toMatchObject({ status: 'unknown', id: request.id, code: 'timeout' })
+    expect(Date.now() - started).toBeGreaterThanOrEqual(850)
+    await ea.ended()
+    expect(runtime.status().blocked).toEqual(['ea-disconnected'])
+    const again = await ready(port)
+    expect(sent(ea) + sent(again)).toBe(1)
+    expect(logs).toContainEqual(expect.objectContaining({ event: 'mt5.trade-result', fields: expect.objectContaining({ id: request.id, status: 'unknown', code: 'timeout' }), level: 'warn' }))
+  })
+
+  it('reports an outcome the EA did not give as unknown, and a request it refused as rejected', async () => {
+    const ea = await ready(await start())
+    const dropped = runtime.trade(BUY)
+    const request = await ea.serve('order.place')
+    ea.close()
+    await expect(dropped).resolves.toMatchObject({ status: 'unknown', id: request.id, code: 'disconnected' })
+    const other = await ready(runtime.status().listen!.port)
+    const refused = runtime.trade(BUY)
+    const forged = await other.serve('order.place')
+    other.fail(forged.id!, 'bad_signature', 'The request signature does not hold')
+    await expect(refused).resolves.toMatchObject({ status: 'rejected', id: forged.id, code: 'bad_signature' })
+    const garbled = runtime.trade(BUY)
+    other.respond((await other.serve('order.place')).id!, { status: 'maybe' })
+    await expect(garbled).resolves.toMatchObject({ status: 'unknown', code: 'bad_answer' })
+  })
+
+  it('reads a symbol\'s trade rules', async () => {
+    await expect(runtime.symbolInfo('EURUSD')).rejects.toMatchObject({ code: 'not_connected' })
+    const ea = await ready(await start())
+    const info = runtime.symbolInfo('EURUSD')
+    const request = await ea.serve('symbol.info', SYMBOL_INFO)
+    expect(request.payload).toEqual({ symbol: 'EURUSD' })
+    await expect(info).resolves.toMatchObject({ symbol: 'EURUSD', volumeStep: 0.01, stopsLevel: 0, orderModes: ['market', 'limit', 'stop', 'sl', 'tp'], marginBuy: 214.5 })
   })
 })

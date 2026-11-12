@@ -93,7 +93,7 @@ vi.mock('../src/extensions.ts', async importOriginal => {
 vi.mock('../src/desktop-terminal.ts', async importOriginal => ({ ...await importOriginal<typeof import('../src/desktop-terminal.ts')>(), openDesktopTerminal: fixture.openTerminal }))
 // The MT5 bridge listens on a real TCP port, which would outlive each test's module instance; its own specs cover it.
 vi.mock('../src/mt5/bridge-runtime.ts', () => ({ Mt5BridgeRuntime: class {
-  status() { return { phase: 'disabled', listen: null, error: null, peer: null, terminal: null, account: null, blocked: ['bridge-disabled'], syncedAt: null, lastRejection: null, eaOutdated: false } }
+  status() { return { phase: 'disabled', listen: null, error: null, peer: null, terminal: null, account: null, blocked: ['bridge-disabled'], syncedAt: null, lastRejection: null, tls: null, disclaimer: null } }
   subscribe() { return () => {} }
   subscribeData() { return () => {} }
   catalog() { return null }
@@ -106,6 +106,8 @@ vi.mock('../src/mt5/bridge-runtime.ts', () => ({ Mt5BridgeRuntime: class {
   async configure() {}
   async resync() {}
   async request() { return {} }
+  async trade() { return { status: 'blocked', id: null, blocked: 'bridge-disabled' } }
+  async symbolInfo() { throw new Error('No EA is connected') }
   async stop() {}
 } }))
 vi.mock('electron', async () => {

@@ -3,20 +3,20 @@
  * only when the bridge reports, and nothing is shown ahead of it. The account and its funds come
  * with the bridge status, positions and pending orders with its trading pushes, and the order and
  * deal history of the selected period from MT5's history, read again after each sync, after new
- * deals while the period includes the present, and on request. Trade requests answer `blocked`
- * without reaching MT5 until the bridge executes them. While the bridge is turned off in Settings
- * the demo account stands in, as it does where there is no bridge at all.
+ * deals while the period includes the present, and on request. Trade requests go to MT5 through
+ * the bridge, once each, for the account on screen, and MT5's answer is their result. While the
+ * bridge is turned off in Settings the demo account stands in, as it does where there is no bridge.
  */
 import type {
-  Mt5Account, Mt5BridgePhase, Mt5Deal, Mt5HistoryOrder, Mt5Order, Mt5OrderType, Mt5Position, Mt5RendererBridge, Mt5Status,
-  Mt5TradeHistory, Mt5Trading as Mt5TradingState,
+  Mt5Account, Mt5AccountKey, Mt5BridgePhase, Mt5Deal, Mt5HistoryOrder, Mt5Order, Mt5OrderType, Mt5Position, Mt5RendererBridge, Mt5Status,
+  Mt5SymbolInfo, Mt5TradeHistory, Mt5TradeInput, Mt5TradeOutcome, Mt5Trading as Mt5TradingState,
 } from '../../../mt5/contract.ts'
 import type { MockTrading } from './mock-trading.ts'
 import { createMt5StatusSource } from './mt5-bridge.ts'
 import {
   DEFAULT_HISTORY, historyRange,
   type AccountInfo, type Deal, type DealEntry, type HistoryOrder, type HistoryOrderType, type HistorySelection, type HistoryState,
-  type PendingOrder, type PendingType, type Position, type Side, type TradeBlock, type TradeResult, type TradingConnection,
+  type PendingOrder, type PendingType, type Position, type Side, type TradeResult, type TradeRules, type TradingConnection,
   type TradingProvider, type TradingSnapshot,
 } from './trading.ts'
 
@@ -55,15 +55,38 @@ const LINK: Record<Mt5BridgePhase, TradingConnection['status']> = {
 }
 
 /**
- * The connection an MT5 status shows. Sending trades is not implemented yet, so `unsupported` keeps
- * the gate closed where the bridge itself would open it.
+ * The connection an MT5 status shows.
  * @param status - null until the main process answered.
  */
 export function mt5Connection(status: Mt5Status | null): TradingConnection {
   if (status === null) return { source: 'mt5', status: 'connecting', blocked: ['syncing'], mt5: null }
-  const blocked: TradeBlock[] = status.blocked.length > 0 ? [...status.blocked] : ['unsupported']
-  return { source: 'mt5', status: LINK[status.phase], blocked, mt5: status }
+  return { source: 'mt5', status: LINK[status.phase], blocked: [...status.blocked], mt5: status }
 }
+
+/** The page's result of what MT5 made of a trade request. */
+export function tradeResult(outcome: Mt5TradeOutcome): TradeResult {
+  return {
+    status: outcome.status === 'unknown' ? 'unconfirmed' : outcome.status,
+    ...outcome.blocked === null ? {} : { blocked: outcome.blocked },
+    retcode: outcome.retcode === 0 ? null : outcome.retcode,
+    code: outcome.code === '' ? null : outcome.code,
+    message: outcome.message, orderTicket: outcome.order, price: outcome.price, volume: outcome.volume,
+  }
+}
+
+/** The order ticket's rules of an MT5 symbol. */
+export function tradeRules(info: Mt5SymbolInfo): TradeRules {
+  return {
+    stopsDistance: info.stopsLevel * info.point,
+    tradeMode: info.tradeMode,
+    orderTypes: (['market', 'limit', 'stop'] as const).filter(type => info.orderModes.includes(type)),
+    marginPerLot: { buy: info.marginBuy, sell: info.marginSell },
+  }
+}
+
+/** A result for a request that never reached MT5. */
+const unsent = (status: 'rejected' | 'blocked', code: string | null, message: string, blocked?: TradeResult['blocked']): TradeResult =>
+  ({ status, ...blocked === undefined ? {} : { blocked }, retcode: null, code, message, orderTicket: null, price: null, volume: null })
 
 /** Side and page type of each MT5 order type. */
 const ORDER_TYPES: Readonly<Record<Mt5OrderType, { side: Side | null; type: HistoryOrderType }>> = {
@@ -173,7 +196,7 @@ export function createMt5Trading(options: Mt5TradingOptions): Mt5Trading {
   /** The account session the history belongs to; null while none is in sync. */
   const session = (): string | null => {
     const status = source.get()
-    return status?.phase === 'ready' && status.account !== null && !status.eaOutdated ? `${status.account.server}\n${status.account.login}` : null
+    return status?.phase === 'ready' && status.account !== null ? `${status.account.server}\n${status.account.login}` : null
   }
   const notify = (): void => {
     version++
@@ -271,10 +294,27 @@ export function createMt5Trading(options: Mt5TradingOptions): Mt5Trading {
     if (at >= range.from && at < range.to) scheduleHistory()
   })
 
-  const refuse = async (): Promise<TradeResult> => ({
-    status: 'blocked', blocked: getSnapshot().connection.blocked[0] ?? 'unsupported',
-    retcode: null, message: '', orderTicket: null, price: null,
-  })
+  /**
+   * Send a request for the account on screen, so it fails rather than trade on another account the
+   * terminal switched to meanwhile. `build` returns the EA's refusal code instead for a ticket the
+   * page no longer lists.
+   */
+  const send = async (build: (account: Mt5AccountKey) => Mt5TradeInput | string): Promise<TradeResult> => {
+    // The main process checks the gate again: this page's view of it may be a moment old.
+    const blocked = getSnapshot().connection.blocked[0]
+    const account = source.get()?.account
+    if (blocked !== undefined || account == null) return unsent('blocked', null, '', blocked ?? 'syncing')
+    const input = build({ login: account.login, server: account.server })
+    if (typeof input === 'string') return unsent('rejected', input, '')
+    try {
+      return tradeResult(await bridge.trade(input))
+    } catch (error) {
+      // The main process answers every request it sends; one it throws for never reached MT5.
+      return unsent('rejected', null, error instanceof Error ? error.message : String(error))
+    }
+  }
+  const position = (ticket: string): Position | undefined => positions.find(item => item.ticket === ticket)
+  const order = (ticket: string): PendingOrder | undefined => orders.find(item => item.ticket === ticket)
 
   return {
     getSnapshot,
@@ -287,11 +327,29 @@ export function createMt5Trading(options: Mt5TradingOptions): Mt5Trading {
         followDemo()
       }
     },
-    sendOrder: request => usesDemo() ? demo.sendOrder(request) : refuse(),
-    closePosition: (ticket, lots) => usesDemo() ? demo.closePosition(ticket, lots) : refuse(),
-    modifyPosition: (ticket, brackets) => usesDemo() ? demo.modifyPosition(ticket, brackets) : refuse(),
-    modifyOrder: (ticket, changes) => usesDemo() ? demo.modifyOrder(ticket, changes) : refuse(),
-    cancelOrder: ticket => usesDemo() ? demo.cancelOrder(ticket) : refuse(),
+    rules: ticker => usesDemo() ? demo.rules(ticker) : bridge.symbolInfo(ticker).then(tradeRules, () => null),
+    acceptDisclaimer: () => bridge.acceptDisclaimer(),
+    sendOrder: request => usesDemo() ? demo.sendOrder(request) : send(account => ({
+      type: 'order.place', account, symbol: request.ticker, side: request.side, orderType: request.type, volume: request.lots,
+      price: request.type === 'market' ? null : request.price, sl: request.stopLoss, tp: request.takeProfit,
+    })),
+    closePosition: (ticket, lots) => usesDemo() ? demo.closePosition(ticket, lots) : send((account) => {
+      const held = position(ticket)
+      return held === undefined ? 'no_position' : { type: 'position.close', account, symbol: held.ticker, ticket, volume: lots ?? held.lots }
+    }),
+    modifyPosition: (ticket, brackets) => usesDemo() ? demo.modifyPosition(ticket, brackets) : send((account) => {
+      const held = position(ticket)
+      return held === undefined ? 'no_position' : { type: 'position.modify', account, symbol: held.ticker, ticket, sl: brackets.stopLoss, tp: brackets.takeProfit }
+    }),
+    modifyOrder: (ticket, changes) => usesDemo() ? demo.modifyOrder(ticket, changes) : send((account) => {
+      const pending = order(ticket)
+      return pending === undefined ? 'no_order'
+        : { type: 'order.modify', account, symbol: pending.ticker, ticket, price: changes.price, sl: changes.stopLoss, tp: changes.takeProfit }
+    }),
+    cancelOrder: ticket => usesDemo() ? demo.cancelOrder(ticket) : send((account) => {
+      const pending = order(ticket)
+      return pending === undefined ? 'no_order' : { type: 'order.cancel', account, symbol: pending.ticker, ticket }
+    }),
     resync: () => bridge.resync(),
     setHistoryPeriod(next) {
       demo.setHistoryPeriod(next)

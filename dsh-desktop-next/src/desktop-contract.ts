@@ -46,14 +46,16 @@ export interface DesktopPreferences {
   scheduleFailed: boolean
   /** Read when the Host starts; a change restarts the Host and reloads the window. */
   layoutMode: DesktopLayoutMode
-  /** Run the MT5 bridge, the TCP server the DshBridge EA connects to; Safe Mode keeps it off. */
+  /** Run the MT5 bridge, the TLS server the DshBridge EA connects to; Safe Mode keeps it off. */
   mt5Enabled: boolean
-  /** `loopback` admits an EA on this machine only; `lan` listens on every interface. */
+  /** `loopback` admits an EA on this machine only; `lan` listens on every interface, so any EA that proves the token connects. */
   mt5Exposure: 'loopback' | 'lan'
   /** TCP port the EA dials. */
   mt5Port: number
-  /** IPv4 addresses an EA may connect from besides loopback, comma separated; empty admits any. */
-  mt5AllowedAddresses: string
+  /** The trading risk disclaimer version the user agreed to; 0 until they agree. Trading needs `MT5_DISCLAIMER_VERSION`. */
+  mt5DisclaimerVersion: number
+  /** When the user agreed to it (Unix ms); 0 until they agree. */
+  mt5DisclaimerAcceptedAt: number
 }
 
 export const DEFAULT_PREFERENCES: Readonly<DesktopPreferences> = Object.freeze({
@@ -61,7 +63,8 @@ export const DEFAULT_PREFERENCES: Readonly<DesktopPreferences> = Object.freeze({
   browserAccess: false, networkExposure: 'loopback', port: 0, lanPort: 0, logLevel: 'info', developerLogging: false,
   sidebarFooterCompat: true, sidebarFooterBalanced: true, notifications: true, turnCompleted: true, turnFailed: true, jobCompleted: false, jobFailed: false,
   scheduleCompleted: true, scheduleFailed: true, layoutMode: 'trading',
-  mt5Enabled: true, mt5Exposure: 'loopback', mt5Port: MT5_DEFAULT_PORT, mt5AllowedAddresses: '',
+  mt5Enabled: true, mt5Exposure: 'loopback', mt5Port: MT5_DEFAULT_PORT,
+  mt5DisclaimerVersion: 0, mt5DisclaimerAcceptedAt: 0,
 })
 
 /** Fixed startup defaults matching Beta's disposable Safe Mode settings. */
@@ -70,7 +73,8 @@ export const SAFE_MODE_PREFERENCES: Readonly<DesktopPreferences> = Object.freeze
   browserAccess: false, networkExposure: 'loopback', port: 0, lanPort: 0, logLevel: 'info', developerLogging: false,
   sidebarFooterCompat: true, sidebarFooterBalanced: true, notifications: false, turnCompleted: false, turnFailed: false, jobCompleted: false, jobFailed: false,
   scheduleCompleted: false, scheduleFailed: false, layoutMode: 'compatibility',
-  mt5Enabled: false, mt5Exposure: 'loopback', mt5Port: MT5_DEFAULT_PORT, mt5AllowedAddresses: '',
+  mt5Enabled: false, mt5Exposure: 'loopback', mt5Port: MT5_DEFAULT_PORT,
+  mt5DisclaimerVersion: 0, mt5DisclaimerAcceptedAt: 0,
 })
 
 /** A failure report being written, saved to `file`, or not written. */
