@@ -9,7 +9,7 @@ import { useEffect, useState } from 'react'
 import { useClipboardCopy } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { DesktopPreferences, DesktopState } from '../desktop-contract.ts'
 import { formatAddressList, parseAddressList } from '../mt5/addresses.ts'
-import type { Mt5RejectReason, Mt5RendererBridge, Mt5Status } from '../mt5/contract.ts'
+import { MT5_MIN_EA_VERSION, type Mt5RejectReason, type Mt5RendererBridge, type Mt5Status } from '../mt5/contract.ts'
 import { DesktopSettingsToggleRow } from './DesktopSettingsSection.tsx'
 import { desktopMt5Bridge } from './market/data/mt5-bridge.ts'
 
@@ -187,6 +187,10 @@ function Mt5StatusBox({ status, t }: { status: Mt5Status; t: Translate }) {
     {peer !== null && <span>
       {t('EA', 'EA')} <code>{peer.address}</code> · {peer.eaVersion}
       {account !== null && <> · {t('账户', 'account')} <code>{account.login}</code> @ {account.server}</>}
+    </span>}
+    {status.eaOutdated && <span>
+      {t(`EA ${peer?.eaVersion ?? ''} 版本过旧，只同步账户；行情、持仓和历史需要 ${MT5_MIN_EA_VERSION} 或更新的版本。请在 MT5 中把新版 DshBridge 重新挂到图表上。`,
+        `EA ${peer?.eaVersion ?? ''} is too old and syncs the account only; prices, positions and history need ${MT5_MIN_EA_VERSION} or later. In MT5, attach the new DshBridge to a chart again.`)}
     </span>}
     {lastRejection !== null && (peer === null || lastRejection.at >= peer.connectedAt) && <span>
       {t('最近拒绝', 'Last refused')} <code>{lastRejection.address}</code>{t('：', ': ')}{t(...REJECTIONS[lastRejection.reason])}{t(`（${clock(lastRejection.at)}）`, ` (${clock(lastRejection.at)})`)}

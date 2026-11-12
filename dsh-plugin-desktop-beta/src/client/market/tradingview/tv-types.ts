@@ -111,6 +111,8 @@ export interface TvChart {
   resolution(): string
   getAllStudies(): TvEntityInfo[]
   getStudyById(id: string): TvStudy
+  /** Request the bars again, after the datafeed reset their cache. */
+  resetData(): void
 }
 
 export type TvOverrides = Record<string, string | number | boolean>

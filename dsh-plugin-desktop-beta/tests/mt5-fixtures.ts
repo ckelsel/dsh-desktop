@@ -16,6 +16,60 @@ export const ACCOUNT = {
   margin_so_call: 100, margin_so_so: 50, margin_so_mode: 'percent',
 }
 
+/** A hello from an EA that serves stage 2: symbols, quotes, bars, positions, orders and history. */
+export const HELLO_STAGE2 = { ...HELLO, ea_version: '1.1.0' }
+
+export const EURUSD = {
+  name: 'EURUSD', description: 'Euro vs US Dollar', path: 'Forex\\Majors\\EURUSD', currency_base: 'EUR', currency_profit: 'USD', currency_margin: 'EUR',
+  digits: 5, point: 0.00001, tick_size: 0.00001, contract_size: 100_000, volume_min: 0.01, volume_max: 100, volume_step: 0.01,
+  trade_mode: 'full', calc_mode: 'forex', sector: 'currency', selected: true,
+}
+export const XAUUSD = {
+  ...EURUSD, name: 'XAUUSD', description: 'Gold vs US Dollar', path: 'Metals\\XAUUSD', currency_base: 'XAU', currency_margin: 'XAU',
+  digits: 2, point: 0.01, tick_size: 0.01, contract_size: 100, calc_mode: 'cfd', sector: 'commodities',
+}
+export const US500 = {
+  ...EURUSD, name: 'US500', description: 'US 500 Index', path: 'Indices\\US500', currency_base: 'USD', currency_margin: 'USD',
+  digits: 2, point: 0.01, tick_size: 0.25, contract_size: 1, volume_min: 0.1, volume_step: 0.1, calc_mode: 'cfdindex', sector: 'indexes', selected: false,
+}
+export const SYMBOLS = [EURUSD, XAUUSD, US500]
+/** Market Watch, in window order. */
+export const WATCH = ['XAUUSD', 'EURUSD']
+
+export const POSITION = {
+  ticket: '1001', symbol: 'EURUSD', side: 'buy', volume: 0.1, price_open: 1.0712, sl: null, tp: 1.08, price_current: 1.0725,
+  profit: 13, swap: -0.5, time: 1_762_000_000_000, comment: '', magic: 0,
+}
+export const ORDER = {
+  ticket: '2001', symbol: 'XAUUSD', type: 'buy_limit', state: 'placed', volume: 0.05, volume_initial: 0.05, price: 2300, stop_limit: null,
+  sl: 2280, tp: null, price_current: 2350.5, time: 1_762_000_100_000, time_type: 'gtc', expiration: null, comment: 'dip', magic: 0,
+}
+export const TICK = {
+  symbol: 'EURUSD', time: 1_762_000_200_000, bid: 1.07251, ask: 1.07253, day_open: 1.0701, day_high: 1.0731, day_low: 1.0695,
+  prev_close: 1.0702, day_volume: 51_234, session_open: true,
+}
+export const BAR = { symbol: 'EURUSD', timeframe: 'M5', time: 1_762_000_200_000, open: 1.0724, high: 1.0726, low: 1.0723, close: 1.07251, volume: 87 }
+export const HISTORY_ORDER = {
+  ticket: '3001', symbol: 'EURUSD', type: 'buy', state: 'filled', volume_initial: 0.1, volume_current: 0, price: 1.0712, stop_limit: null, sl: null, tp: null,
+  time_setup: 1_761_990_000_000, time_done: 1_761_990_000_120, position: '1001', position_by: '0', reason: 'client', comment: '', magic: 0,
+}
+export const DEAL = {
+  ticket: '4001', order: '3001', position: '1001', symbol: 'EURUSD', type: 'buy', entry: 'in', volume: 0.1, price: 1.0712,
+  commission: -0.35, swap: 0, fee: 0, profit: 0, time: 1_761_990_000_120, reason: 'client', comment: '', magic: 0,
+}
+export const DEPOSIT = {
+  ...DEAL, ticket: '4000', order: '0', position: '0', symbol: '', type: 'balance', volume: 0, price: 0, commission: 0, profit: 10_000,
+  time: 1_761_900_000_000, comment: 'Deposit',
+}
+
+/** What the stage 2 sync reads after the account. */
+export interface Stage2State {
+  symbols?: readonly Record<string, unknown>[]
+  watch?: readonly string[]
+  positions?: readonly Record<string, unknown>[]
+  orders?: readonly Record<string, unknown>[]
+}
+
 export type Frame = Record<string, unknown> & { type: string; id?: string; payload?: Record<string, unknown> }
 
 /** A test EA: connects, writes frames, and collects the frames the bridge sends. */
@@ -105,6 +159,30 @@ export class FakeEa {
     await this.serve('system.resync', {})
     await this.serve('system.status', terminal)
     await this.serve('account.snapshot', account)
+  }
+
+  /** Answer `symbols.list` requests page by page until the bridge has every symbol. */
+  async serveCatalog(symbols: readonly Record<string, unknown>[] = SYMBOLS, watch: readonly string[] = WATCH): Promise<Frame[]> {
+    const requests: Frame[] = []
+    for (;;) {
+      const request = await this.serve('symbols.list')
+      requests.push(request)
+      const offset = request.payload?.offset as number
+      const limit = request.payload?.limit as number
+      this.respond(request.id!, {
+        total: symbols.length, symbols: symbols.slice(offset, offset + limit), ...offset === 0 ? { watch } : {},
+      })
+      if (offset + limit >= symbols.length) return requests
+    }
+  }
+
+  /** Answer the stage 2 sync: the account, the catalogue, positions, orders and the subscription. */
+  async syncStage2(state: Stage2State = {}, account: Record<string, unknown> = ACCOUNT, terminal: Record<string, unknown> = TERMINAL): Promise<Frame> {
+    await this.sync(account, terminal)
+    await this.serveCatalog(state.symbols, state.watch)
+    await this.serve('positions.snapshot', { positions: state.positions ?? [POSITION] })
+    await this.serve('orders.snapshot', { orders: state.orders ?? [ORDER] })
+    return this.serve('market.subscribe', { unknown: [] })
   }
 
   /** Resolve once the bridge has closed the connection. */

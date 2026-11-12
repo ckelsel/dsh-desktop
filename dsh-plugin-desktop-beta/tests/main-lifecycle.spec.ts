@@ -93,8 +93,14 @@ vi.mock('../src/extensions.ts', async importOriginal => {
 vi.mock('../src/desktop-terminal.ts', async importOriginal => ({ ...await importOriginal<typeof import('../src/desktop-terminal.ts')>(), openDesktopTerminal: fixture.openTerminal }))
 // The MT5 bridge listens on a real TCP port, which would outlive each test's module instance; its own specs cover it.
 vi.mock('../src/mt5/bridge-runtime.ts', () => ({ Mt5BridgeRuntime: class {
-  status() { return { phase: 'disabled', listen: null, error: null, peer: null, terminal: null, account: null, blocked: ['bridge-disabled'], syncedAt: null, lastRejection: null } }
+  status() { return { phase: 'disabled', listen: null, error: null, peer: null, terminal: null, account: null, blocked: ['bridge-disabled'], syncedAt: null, lastRejection: null, eaOutdated: false } }
   subscribe() { return () => {} }
+  subscribeData() { return () => {} }
+  catalog() { return null }
+  trading() { return null }
+  setSubscription() {}
+  async historyBars() { return { bars: [], noData: true } }
+  async historyTrades() { return { orders: [], deals: [], truncated: false } }
   token() { return 'fixture-token' }
   async regenerateToken() { return 'fixture-token' }
   async configure() {}

@@ -4,7 +4,8 @@ import type { TradingConnection } from './data/trading.ts'
 /** Colour of the badge: demo data, idle, in progress, in sync, needs attention, failed. */
 export type ConnectionTone = 'mock' | 'idle' | 'busy' | 'ok' | 'warning' | 'error'
 
-type BadgeKey = 'account.mock' | 'conn.waiting' | 'conn.error' | 'conn.listening' | 'conn.handshaking' | 'conn.syncing' | 'conn.ready' | 'conn.brokerLost'
+type BadgeKey = 'account.mock' | 'conn.waiting' | 'conn.error' | 'conn.listening' | 'conn.handshaking' | 'conn.syncing' | 'conn.ready'
+  | 'conn.brokerLost' | 'conn.eaOutdated'
 
 /** The badge's label key and tone for a connection. */
 export function connectionBadge(connection: TradingConnection): { key: BadgeKey; tone: ConnectionTone } {
@@ -18,7 +19,9 @@ export function connectionBadge(connection: TradingConnection): { key: BadgeKey;
     case 'listening': return { key: 'conn.listening', tone: 'idle' }
     case 'handshaking': return { key: 'conn.handshaking', tone: 'busy' }
     case 'syncing': return { key: 'conn.syncing', tone: 'busy' }
-    case 'ready': return status.terminal?.connected === false ? { key: 'conn.brokerLost', tone: 'warning' } : { key: 'conn.ready', tone: 'ok' }
+    case 'ready':
+      if (status.eaOutdated) return { key: 'conn.eaOutdated', tone: 'warning' }
+      return status.terminal?.connected === false ? { key: 'conn.brokerLost', tone: 'warning' } : { key: 'conn.ready', tone: 'ok' }
   }
 }
 

@@ -122,6 +122,24 @@ const STYLES = `
   color: var(--mk-text-3);
 }
 .dshMkChartState strong { color: var(--mk-text); font-size: 14px; font-weight: 600; }
+/* Waiting for MT5: shown after a moment, so a quick start does not flash it. */
+.dshMkWaiting {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  text-align: center;
+  color: var(--mk-text-3);
+  animation: dshMkFadeIn 160ms ease 400ms both;
+}
+.dshMkWaiting strong { color: var(--mk-text); font-size: 14px; font-weight: 600; }
+.dshMkWaiting > span { max-width: 420px; line-height: 1.5; }
+.dshMkWaiting[data-compact] { position: static; justify-content: flex-start; padding: 32px 16px; }
+@keyframes dshMkFadeIn { from { opacity: 0; } to { opacity: 1; } }
 .dshMkButton {
   height: 28px;
   padding: 0 14px;
@@ -288,6 +306,12 @@ const STYLES = `
   font-weight: 700;
 }
 .dshMkWlBadge[data-asset='metal'] { background: #c9961a; }
+.dshMkWlBadge[data-asset='index'] { background: #7e57c2; }
+.dshMkWlBadge[data-asset='commodity'] { background: #8d6e63; }
+.dshMkWlBadge[data-asset='crypto'] { background: #f7931a; }
+.dshMkWlBadge[data-asset='stock'] { background: #26a69a; }
+.dshMkWlBadge[data-asset='other'] { background: #78909c; }
+.dshMkWlPaused { flex: 0 0 auto; padding: 6px 10px; border-bottom: 0.5px solid var(--mk-line-soft); background: color-mix(in srgb, var(--mk-warn) 12%, transparent); color: var(--mk-warn-text); font-size: 11px; line-height: 1.4; }
 .dshMkWlTicker { overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .dshMkFlash { display: inline-block; margin-right: -3px; padding: 1px 3px; border-radius: 3px; }
 .dshMkFlash[data-flash='up'] { animation: dshMkFlashUp 900ms ease-out; }
@@ -597,6 +621,27 @@ const STYLES = `
 .dshMkConnTrading ul { margin: 0; padding-left: 16px; color: var(--mk-warn-text); }
 .dshMkConnActions { display: flex; justify-content: flex-end; }
 .dshMkTradeBody { flex: 1 1 auto; min-height: 0; overflow: auto; }
+.dshMkHistoryBody { display: flex; flex-direction: column; min-height: 100%; }
+.dshMkHistoryBar { position: sticky; left: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 6px 10px; border-bottom: 0.5px solid var(--mk-line-soft); }
+.dshMkHistoryBar .dshMkTabs { flex: 0 0 auto; }
+.dshMkHistoryBar .dshMkTab { flex: 0 0 auto; height: 22px; padding: 0 8px; font-size: 12px; }
+.dshMkDateRange { display: inline-flex; align-items: center; gap: 6px; color: var(--mk-text-3); font-size: 12px; }
+.dshMkDateInput {
+  height: 24px;
+  padding: 0 6px;
+  box-sizing: border-box;
+  border: 0.5px solid var(--mk-line);
+  border-radius: 4px;
+  background: var(--mk-input);
+  color: var(--mk-text);
+  font: inherit;
+  color-scheme: light dark;
+}
+.dshMkHistoryStatus { display: inline-flex; align-items: center; gap: 8px; color: var(--mk-text-3); font-size: 12px; }
+.dshMkHistoryStatus[data-tone='error'] { color: var(--mk-error); }
+.dshMkHistoryStatus[data-tone='warning'] { color: var(--mk-warn-text); }
+.dshMkTable tfoot td { position: sticky; bottom: 0; height: 30px; border-top: 0.5px solid var(--mk-line); border-bottom: 0; background: var(--mk-bg); font-weight: 600; }
+.dshMkTable tr[data-kind='balance'] td { color: var(--mk-text-2); }
 .dshMkTable { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .dshMkTable th {
   position: sticky;
@@ -642,7 +687,8 @@ const STYLES = `
 }
 .dshMkTextButton:hover:not(:disabled) { background: var(--mk-hover); }
 .dshMkTextButton:disabled { opacity: 0.5; cursor: default; }
-.dshMkState[data-state='cancelled'], .dshMkState[data-state='expired'] { color: var(--mk-text-3); }
+.dshMkState[data-state='cancelled'], .dshMkState[data-state='expired'], .dshMkState[data-state='placed'] { color: var(--mk-text-3); }
+.dshMkState[data-state='partial'] { color: var(--mk-warn-text); }
 .dshMkState[data-state='rejected'] { color: var(--dsw-alias-state-error-primary, #ef4444); }
 .dshMkAccountTab { display: grid; grid-template-columns: minmax(0, 2fr) minmax(220px, 1fr); gap: 24px; padding: 12px 16px; }
 .dshMkAccountTab h3 { margin: 0 0 10px; color: var(--mk-text-2); font-size: 12px; font-weight: 600; }

@@ -1,7 +1,11 @@
-/** MT5 bridge protocol v1: frame shapes and the payloads the EA sends. */
+/** MT5 bridge protocol v1: frame shapes, the payloads the EA sends, and what the renderer may ask for. */
 import { describe, expect, it } from 'vitest'
-import { Mt5ProtocolError, parseAccount, parseFrame, parseHello, parseTerminalStatus } from '../src/mt5/protocol.ts'
-import { ACCOUNT, HELLO, TERMINAL, TOKEN } from './mt5-fixtures.ts'
+import {
+  compareVersions, Mt5ProtocolError, parseAccount, parseBars, parseFrame, parseHello, parseHistoryAnswer, parseOrders, parsePositions,
+  parseSubscribeAnswer, parseSymbolsPage, parseTerminalStatus, parseTicks, parseTradeEvent, parseTradeHistory,
+} from '../src/mt5/protocol.ts'
+import { parseHistoryBarsInput, parseHistoryBarsOptions, parseHistoryRangeInput, parseSubscriptionInput } from '../src/mt5/renderer-input.ts'
+import { ACCOUNT, BAR, DEAL, DEPOSIT, EURUSD, HELLO, HISTORY_ORDER, ORDER, POSITION, TERMINAL, TICK, TOKEN, US500, XAUUSD } from './mt5-fixtures.ts'
 
 describe('parseFrame', () => {
   it('reads requests, events, and both kinds of responses', () => {
@@ -56,5 +60,121 @@ describe('payloads', () => {
     expect(() => parseAccount({ ...ACCOUNT, trade_mode: 'paper' })).toThrow('account.snapshot.trade_mode must be one of demo, contest, real')
     expect(() => parseAccount({ ...ACCOUNT, equity: Number.NaN })).toThrow('account.snapshot.equity')
     expect(() => parseAccount({ ...ACCOUNT, name: 'x'.repeat(1025) })).toThrow('account.snapshot.name')
+  })
+})
+
+describe('stage 2 payloads', () => {
+  it('reads a catalogue page, leaving out invalid symbols and keeping the Market Watch order', () => {
+    const page = parseSymbolsPage({
+      total: 5, watch: ['XAUUSD', 'EURUSD'],
+      symbols: [EURUSD, { ...XAUUSD, tick_size: 0 }, { ...US500, digits: 11 }, { ...US500, name: '' }, 'US30'],
+    })
+    expect(page.total).toBe(5)
+    expect(page.watch).toEqual(['XAUUSD', 'EURUSD'])
+    expect(page.symbols.items).toHaveLength(2)
+    expect(page.symbols.items[0]).toEqual({
+      name: 'EURUSD', description: 'Euro vs US Dollar', path: 'Forex\\Majors\\EURUSD', currencyBase: 'EUR', currencyProfit: 'USD', currencyMargin: 'EUR',
+      digits: 5, point: 0.00001, tickSize: 0.00001, contractSize: 100_000, volumeMin: 0.01, volumeMax: 100, volumeStep: 0.01,
+      tradeMode: 'full', calcMode: 'forex', sector: 'currency', selected: true,
+    })
+    // A symbol without a tick size moves by points.
+    expect(page.symbols.items[1]?.tickSize).toBe(0.01)
+    expect(page.symbols).toMatchObject({ skipped: 3, firstError: expect.stringContaining('digits') })
+    expect(parseSymbolsPage({ total: 1, symbols: [EURUSD] }).watch).toBeNull()
+    expect(() => parseSymbolsPage({ total: 1, symbols: {} })).toThrow('symbols.list.symbols must be an array')
+    expect(() => parseSymbolsPage({ total: -1, symbols: [] })).toThrow('symbols.list.total')
+  })
+
+  it('reads quotes, with the day figures empty until MT5 has them', () => {
+    const ticks = parseTicks({ ticks: [TICK, { ...TICK, symbol: 'XAUUSD', day_open: null, day_high: null, day_low: null, prev_close: null, day_volume: null }, { ...TICK, bid: 'x' }] })
+    expect(ticks.items[0]).toEqual({
+      symbol: 'EURUSD', time: 1_762_000_200_000, bid: 1.07251, ask: 1.07253, dayOpen: 1.0701, dayHigh: 1.0731, dayLow: 1.0695,
+      prevClose: 1.0702, dayVolume: 51_234, sessionOpen: true,
+    })
+    expect(ticks.items[1]).toMatchObject({ symbol: 'XAUUSD', dayOpen: null, prevClose: null, dayVolume: null })
+    expect(ticks.skipped).toBe(1)
+    expect(parseBars({ bars: [BAR, { ...BAR, timeframe: 'M2' }] })).toMatchObject({ items: [{ symbol: 'EURUSD', timeframe: 'M5', close: 1.07251, volume: 87 }], skipped: 1 })
+  })
+
+  it('reads history bars oldest first, leaving out invalid and out-of-order rows', () => {
+    expect(parseHistoryAnswer({ pending: true })).toEqual({ pending: true })
+    const answer = parseHistoryAnswer({ no_data: false, bars: [[1_000, 1, 2, 0.5, 1.5, 10], [2_000, 1.5, 2, 1, 1.8, 7], [2_000, 1, 1, 1, 1, 1], [3_000, 1, 'x', 1, 1, 1], [4_000, 1, 1, 1], [5_000, 1.8, 1.9, 1.7, 1.75, 3]] })
+    expect(answer).toEqual({
+      pending: false, noData: false, complete: true, skipped: 3,
+      bars: [
+        { time: 1_000, open: 1, high: 2, low: 0.5, close: 1.5, volume: 10 },
+        { time: 2_000, open: 1.5, high: 2, low: 1, close: 1.8, volume: 7 },
+        { time: 5_000, open: 1.8, high: 1.9, low: 1.7, close: 1.75, volume: 3 },
+      ],
+    })
+    expect(parseHistoryAnswer({ bars: [], no_data: true })).toMatchObject({ pending: false, bars: [], noData: true })
+    expect(() => parseHistoryAnswer({ bars: [] })).toThrow('market.history.no_data')
+    // A partial answer says whether older bars of the page are still downloading.
+    expect(parseHistoryAnswer({ bars: [], no_data: false, complete: false })).toMatchObject({ pending: false, complete: false })
+    expect(() => parseHistoryAnswer({ bars: [], no_data: false, complete: 'no' })).toThrow('market.history.complete')
+  })
+
+  it('reads positions and pending orders', () => {
+    expect(parsePositions({ positions: [POSITION] }).items).toEqual([{
+      ticket: '1001', symbol: 'EURUSD', side: 'buy', volume: 0.1, priceOpen: 1.0712, sl: null, tp: 1.08, priceCurrent: 1.0725,
+      profit: 13, swap: -0.5, time: 1_762_000_000_000, comment: '', magic: 0,
+    }])
+    expect(parsePositions({ positions: [{ ...POSITION, side: 'long' }] })).toMatchObject({ items: [], skipped: 1 })
+    expect(parseOrders({ orders: [ORDER, { ...ORDER, type: 'buy' }] })).toMatchObject({
+      items: [{ ticket: '2001', type: 'buy_limit', state: 'placed', volumeInitial: 0.05, price: 2300, stopLimit: null, sl: 2280, tp: null, timeType: 'gtc', expiration: null, comment: 'dip' }],
+      // A market order still executing is not a pending order.
+      skipped: 1,
+    })
+    expect(() => parsePositions({})).toThrow('positions.snapshot.positions must be an array')
+  })
+
+  it('reads history, with balance operations and no ticket for MT5\'s 0', () => {
+    const history = parseTradeHistory({ orders: [HISTORY_ORDER], deals: [DEAL, DEPOSIT, { ...DEAL, entry: 'sideways' }], truncated: true })
+    expect(history.truncated).toBe(true)
+    expect(history.orders.items[0]).toMatchObject({ ticket: '3001', type: 'buy', state: 'filled', price: 1.0712, position: '1001', positionBy: null, timeDone: 1_761_990_000_120 })
+    expect(history.deals.items).toEqual([
+      expect.objectContaining({ ticket: '4001', order: '3001', position: '1001', type: 'buy', entry: 'in', commission: -0.35 }),
+      expect.objectContaining({ ticket: '4000', order: null, position: null, symbol: '', type: 'balance', profit: 10_000, comment: 'Deposit' }),
+    ])
+    expect(history.deals.skipped).toBe(1)
+    expect(parseTradeEvent({ type: 'deal_add', deal: '4002', order: '3002', position: '0', symbol: 'EURUSD' }))
+      .toEqual({ type: 'deal_add', deal: '4002', order: '3002', position: null, symbol: 'EURUSD' })
+    expect(parseSubscribeAnswer({ unknown: ['FOO'] })).toEqual(['FOO'])
+  })
+
+  it('compares EA versions numerically', () => {
+    expect(compareVersions('1.1.0', '1.1.0')).toBe(0)
+    expect(compareVersions('1.0.0', '1.1.0')).toBeLessThan(0)
+    expect(compareVersions('1.10.0', '1.9.9')).toBeGreaterThan(0)
+    expect(compareVersions('1.1', '1.1.0')).toBe(0)
+    expect(compareVersions('dev', '1.1.0')).toBeLessThan(0)
+  })
+})
+
+describe('renderer input', () => {
+  it('takes a subscription without duplicates and within the caps', () => {
+    const quotes = Array.from({ length: 250 }, (_, index) => `S${String(index)}`)
+    const bars = Array.from({ length: 30 }, (_, index) => ({ symbol: `S${String(index)}`, timeframe: 'M5' }))
+    const subscription = parseSubscriptionInput({ quotes: ['EURUSD', 'EURUSD', ...quotes], bars: [{ symbol: 'EURUSD', timeframe: 'H1' }, { symbol: 'EURUSD', timeframe: 'H1' }, ...bars] })
+    expect(subscription.quotes).toHaveLength(200)
+    expect(subscription.quotes.slice(0, 2)).toEqual(['EURUSD', 'S0'])
+    expect(subscription.bars).toHaveLength(20)
+    expect(subscription.bars[0]).toEqual({ symbol: 'EURUSD', timeframe: 'H1' })
+    expect(() => parseSubscriptionInput({ quotes: [''], bars: [] })).toThrow('invalid quote subscription')
+    expect(() => parseSubscriptionInput({ quotes: [], bars: [{ symbol: 'EURUSD', timeframe: '5' }] })).toThrow('invalid bar subscription')
+    expect(() => parseSubscriptionInput({ quotes: [] })).toThrow('invalid subscription')
+  })
+
+  it('takes history requests only with sane bounds', () => {
+    expect(parseHistoryBarsInput({ symbol: 'EURUSD', timeframe: 'D1', to: 1_762_000_000_000, count: 300, extra: true }))
+      .toEqual({ symbol: 'EURUSD', timeframe: 'D1', to: 1_762_000_000_000, count: 300 })
+    expect(() => parseHistoryBarsInput({ symbol: 'EURUSD', timeframe: 'D1', to: 1, count: 5001 })).toThrow('invalid history bars request')
+    expect(() => parseHistoryBarsInput({ symbol: 'EURUSD', timeframe: 'D1', to: 0, count: 1 })).toThrow('invalid history bars request')
+    expect(parseHistoryBarsOptions(undefined)).toEqual({})
+    expect(parseHistoryBarsOptions({ partial: true, extra: 1 })).toEqual({ partial: true })
+    expect(() => parseHistoryBarsOptions({ partial: 'yes' })).toThrow('invalid history bars options')
+    expect(() => parseHistoryBarsOptions(null)).toThrow('invalid history bars options')
+    expect(parseHistoryRangeInput({ from: 0, to: 1 })).toEqual({ from: 0, to: 1 })
+    expect(() => parseHistoryRangeInput({ from: 5, to: 5 })).toThrow('invalid history range')
   })
 })

@@ -2,19 +2,23 @@
  * Market page of the trading workspace, laid out like TradingView web: the chart with the trading
  * panel below it, the watchlist or order ticket on the right, and an icon strip at the right edge
  * toggling them. The side panel and the trading panel resize by dragging their borders.
+ *
+ * The chart and the side panel show the current data source. While MT5 has not sent its symbols
+ * they show why instead; when the source changes they mount afresh with that source's preferences.
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import { List, PanelBottom, Ticket, X } from 'lucide-react'
 import { Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
+import { MT5_MIN_EA_VERSION, type Mt5Status } from '../../mt5/contract.ts'
 import { conversionTickers } from './data/trading.ts'
 import { datafeedLabels } from './labels.ts'
 import { OrderTicket } from './OrderTicket.tsx'
-import type { MarketPageProps, Notice, Notify } from './page-types.ts'
+import type { MarketPageProps, MarketT, Notice, Notify } from './page-types.ts'
 import { Splitter } from './Splitter.tsx'
 import { BOTTOM_MIN, PANEL_MAX, PANEL_MIN } from './store.ts'
 import { TradePanel } from './TradePanel.tsx'
-import { TradingViewChart } from './tradingview/TradingViewChart.tsx'
+import { chartStorageKey, TradingViewChart } from './tradingview/TradingViewChart.tsx'
 import { Watchlist } from './Watchlist.tsx'
 
 /** Largest share of the page height the trading panel takes. */
@@ -27,9 +31,32 @@ function StripButton({ label, pressed, onClick, children }: { label: string; pre
   </Tooltip>
 }
 
+/** Why MT5 market data is not there yet. */
+function waitingText(t: MarketT, status: Mt5Status | null): string {
+  if (status === null) return t('source.starting')
+  if (status.eaOutdated) return t('source.outdated', { version: status.peer?.eaVersion ?? '', minimum: MT5_MIN_EA_VERSION })
+  switch (status.phase) {
+    case 'error': return t('source.error')
+    case 'disabled':
+    case 'listening': return t('source.listening')
+    case 'handshaking':
+    case 'syncing':
+    case 'ready': return t('source.syncing')
+  }
+}
+
+function Waiting({ t, status, compact }: { t: MarketT; status: Mt5Status | null; compact?: boolean }) {
+  return <div className="dshMkWaiting" role="status" data-compact={compact || undefined}>
+    {!compact && <strong>{t('source.title')}</strong>}
+    <span>{waitingText(t, status)}</span>
+  </div>
+}
+
 /** The market page (see module doc). */
 export function MarketPage(props: MarketPageProps) {
-  const { t, market, trading, quotes, useQuotes, useAccount, useScheme, useLanguage, useStore, actions } = props
+  const { t, market, trading, quotes, useQuotes, useAccount, useSource, useScheme, useLanguage, useStore, actions } = props
+  const source = useSource(value => value)
+  const current = useStore(state => state.source)
   const symbol = useStore(state => state.symbol)
   const resolution = useStore(state => state.resolution)
   const watchlist = useStore(state => state.watchlist)
@@ -41,13 +68,23 @@ export function MarketPage(props: MarketPageProps) {
   const scheme = useScheme(value => value)
   const language = useLanguage(value => value)
   const accountCurrency = useAccount(state => state.account?.currency ?? 'USD')
+  const mt5Status = useAccount(state => state.connection.mt5)
+  const ready = source.state === 'ready' && current === source.key
+
+  // A source with symbols becomes the store's, before the chart and lists show it; a catalogue
+  // update of the same source drops what it no longer lists.
+  useLayoutEffect(() => {
+    if (source.state !== 'ready') return
+    actions.selectSource(source.key, { tickers: market.symbols().map(entry => entry.ticker), watch: source.watch })
+  }, [market, source, actions])
 
   // One quote stream for the rows on screen, the chart symbol and its account-currency conversion.
   useEffect(() => {
+    if (!ready) { quotes.follow([]); return }
     const info = market.symbol(symbol)
     const conversion = info === undefined ? [] : conversionTickers(info, accountCurrency).filter(ticker => market.symbol(ticker) !== undefined)
     quotes.follow([...watchlist, symbol, ...conversion])
-  }, [market, quotes, watchlist, symbol, accountCurrency])
+  }, [market, quotes, ready, watchlist, symbol, accountCurrency])
   useEffect(() => () => { quotes.follow([]) }, [quotes])
 
   // Page height bounds the trading panel.
@@ -86,15 +123,17 @@ export function MarketPage(props: MarketPageProps) {
     loading: t('chart.loading'), missing: t('chart.missing'), missingDetail: t('chart.missingDetail'), retry: t('chart.retry'),
   }), [t])
 
-  const side = panel === null ? null : panel === 'watchlist'
-    ? <Watchlist t={t} market={market} useQuotes={useQuotes} useStore={useStore} actions={actions} accountCurrency={accountCurrency} />
-    : <OrderTicket t={t} market={market} trading={trading} useQuotes={useQuotes} useAccount={useAccount} useStore={useStore} actions={actions} notify={notify} />
+  const side = panel === null ? null : !ready ? <Waiting t={t} status={mt5Status} compact /> : panel === 'watchlist'
+    ? <Watchlist key={source.key} t={t} market={market} live={source.live} useQuotes={useQuotes} useStore={useStore} actions={actions} accountCurrency={accountCurrency} />
+    : <OrderTicket key={source.key} t={t} market={market} trading={trading} useQuotes={useQuotes} useAccount={useAccount} useStore={useStore} actions={actions} notify={notify} />
 
   return <div className="dshMkPage" data-up={upColor} data-dragging={dragging || undefined} style={{ '--mk-panel-width': `${panelWidth}px` } as CSSProperties}>
     <div ref={mainRef} className="dshMkMain">
       <div className="dshMkChartArea">
-        <TradingViewChart
+        {!ready ? <Waiting t={t} status={mt5Status} /> : <TradingViewChart
+          key={source.key}
           market={market}
+          storageKey={chartStorageKey(source.key)}
           symbol={symbol}
           resolution={resolution}
           scheme={scheme}
@@ -104,7 +143,7 @@ export function MarketPage(props: MarketPageProps) {
           text={chartText}
           onSymbol={actions.setSymbol}
           onResolution={actions.setResolution}
-        />
+        />}
         <div className="dshMkNotices" role="status" aria-live="polite">
           {notices.map(notice => <div key={notice.id} className="dshMkNotice" data-tone={notice.tone}>
             <span>{notice.text}</span>

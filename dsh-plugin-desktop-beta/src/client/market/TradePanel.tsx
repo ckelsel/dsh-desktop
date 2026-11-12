@@ -2,18 +2,23 @@
  * Bottom trading panel, after the TradingView web account manager: the account summary, then
  * positions, pending orders, order history, deals and the account details in tabs. Row actions
  * (close, modify, cancel) go to the trading provider; selecting a row shows its symbol on the chart.
+ * The history and deal tabs show the chosen period, and the deals tab totals its trades below them.
  * Open, the full account summary sits below the tabs; collapsed, only the tab bar remains, with the
  * equity and floating profit when there is room. The connection badge stays in the tab bar either way.
  */
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Check, ChevronDown, ChevronUp, Pencil, X } from 'lucide-react'
 import { Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { MarketDataProvider, MarketSymbol } from './data/market-data.ts'
-import { pipsBetween, type AccountInfo, type Brackets, type TradeResult, type TradingConnection, type TradingProvider, type TradingSnapshot } from './data/trading.ts'
+import {
+  HISTORY_PERIODS, historyRange, localDate, pipsBetween,
+  type AccountInfo, type Brackets, type Deal, type HistorySelection, type HistoryState, type TradeResult, type TradingConnection,
+  type TradingProvider, type TradingSnapshot,
+} from './data/trading.ts'
 import { ConnectionStatus } from './ConnectionStatus.tsx'
 import { formatLots, formatMoney, formatNumber, formatPips, formatPrice, formatSigned, formatTime, parseDecimal, trend } from './format.ts'
-import { blockText, orderKind, resultNotice, sideLabel } from './labels.ts'
+import { blockText, entryLabel, operationLabel, orderKind, reasonLabel, resultNotice, sideLabel } from './labels.ts'
 import type { MarketActions, MarketPageProps, MarketT, Notify, UseAccount } from './page-types.ts'
 import type { BottomTab } from './store.ts'
 
@@ -37,22 +42,27 @@ interface Column<Row> {
   cell(row: Row): ReactNode
 }
 
-function Table<Row>({ columns, rows, rowKey, empty, onSelect, label }: {
+function Table<Row>({ columns, rows, rowKey, rowKind, empty, onSelect, label, footer }: {
   columns: readonly Column<Row>[]
   rows: readonly Row[]
   rowKey(row: NoInfer<Row>): string
+  /** A row's `data-kind`, for rows styled apart. */
+  rowKind?(row: NoInfer<Row>): string | undefined
   empty: string
   label: string
   onSelect?(row: NoInfer<Row>): void
+  /** A last row spanning every column. */
+  footer?: ReactNode
 }) {
   if (rows.length === 0) return <div className="dshMkEmpty" data-table="">{empty}</div>
   return <table className="dshMkTable" aria-label={label}>
     <thead><tr>{columns.map(column => <th key={column.key} scope="col" data-numeric={column.numeric || undefined}>{column.label}</th>)}</tr></thead>
     <tbody>
-      {rows.map(row => <tr key={rowKey(row)} onClick={onSelect === undefined ? undefined : () => { onSelect(row) }}>
+      {rows.map(row => <tr key={rowKey(row)} data-kind={rowKind?.(row)} onClick={onSelect === undefined ? undefined : () => { onSelect(row) }}>
         {columns.map(column => <td key={column.key} data-numeric={column.numeric || undefined}>{column.cell(row)}</td>)}
       </tr>)}
     </tbody>
+    {footer !== undefined && <tfoot><tr><td colSpan={columns.length}>{footer}</td></tr></tfoot>}
   </table>
 }
 
@@ -70,6 +80,71 @@ const lotsOf = (symbolOf: (ticker: string) => MarketSymbol | undefined, ticker: 
 
 function Money({ value }: { value: number }) {
   return <span data-trend={trend(value)}>{formatSigned(value, 2)}</span>
+}
+
+/** Totals of the trades among `deals`; balance operations are not trading results. */
+export function dealTotals(deals: readonly Deal[]): { profit: number; commission: number; swap: number; fee: number; net: number } {
+  let profit = 0
+  let commission = 0
+  let swap = 0
+  let fee = 0
+  for (const deal of deals) {
+    if (deal.kind !== 'trade') continue
+    profit += deal.profit
+    commission += deal.commission
+    swap += deal.swap
+    fee += deal.fee
+  }
+  return { profit, commission, swap, fee, net: profit + commission + swap + fee }
+}
+
+function DealTotals({ t, deals }: { t: MarketT; deals: readonly Deal[] }) {
+  const totals = dealTotals(deals)
+  const item = (label: string, value: number, key: string) => <span key={key} className="dshMkSummaryItem"><span className="dshMkMuted">{label}</span><span className="dshMkNum"><Money value={value} /></span></span>
+  return <div className="dshMkAccountSummary" data-compact="">
+    <span>{t('summary.title')}</span>
+    {item(t('summary.profit'), totals.profit, 'profit')}
+    {item(t('summary.commission'), totals.commission, 'commission')}
+    {item(t('summary.swap'), totals.swap, 'swap')}
+    {totals.fee !== 0 && item(t('summary.fee'), totals.fee, 'fee')}
+    {item(t('summary.net'), totals.net, 'net')}
+  </div>
+}
+
+/** The period of the history and deal tabs, and how its reading went. */
+function HistoryBar({ t, selection, state, onSelect, onRetry }: {
+  t: MarketT
+  selection: HistorySelection
+  state: HistoryState
+  onSelect(selection: HistorySelection): void
+  onRetry(): void
+}) {
+  const choose = (period: HistorySelection['period']): void => {
+    if (period !== 'custom' || (selection.from !== '' && selection.to !== '')) { onSelect({ ...selection, period }); return }
+    // A first custom period starts as the current one.
+    const now = Date.now()
+    const range = historyRange(selection, now)
+    onSelect({ period, from: localDate(range.from), to: localDate(Math.min(now, range.to - 1)) })
+  }
+  return <div className="dshMkHistoryBar">
+    <div className="dshMkTabs" role="radiogroup" aria-label={t('history.period')}>
+      {HISTORY_PERIODS.map(period => <button key={period} type="button" role="radio" className="dshMkTab" aria-checked={selection.period === period}
+        onClick={() => { choose(period) }}>{t(`history.${period}`)}</button>)}
+    </div>
+    {selection.period === 'custom' && <span className="dshMkDateRange">
+      <input type="date" className="dshMkDateInput" aria-label={t('history.from')} value={selection.from} max={selection.to || undefined}
+        onChange={(event) => { onSelect({ ...selection, from: event.target.value }) }} />
+      <span>–</span>
+      <input type="date" className="dshMkDateInput" aria-label={t('history.to')} value={selection.to} min={selection.from || undefined}
+        onChange={(event) => { onSelect({ ...selection, to: event.target.value }) }} />
+    </span>}
+    {state.status === 'loading' && <span className="dshMkHistoryStatus" role="status">{t('history.loading')}</span>}
+    {state.status === 'error' && <span className="dshMkHistoryStatus" role="alert" data-tone="error">
+      {t('history.error', { message: state.error ?? '' })}
+      <button type="button" className="dshMkTextButton" onClick={onRetry}>{t('history.retry')}</button>
+    </span>}
+    {state.truncated && <span className="dshMkHistoryStatus" data-tone="warning">{t('history.truncated')}</span>}
+  </div>
 }
 
 function Summary({ t, account, compact }: { t: MarketT; account: AccountInfo | null; compact: boolean }) {
@@ -93,12 +168,14 @@ export function TradePanel({ t, market, trading, useAccount, useStore, actions, 
   const open = useStore(state => state.bottomOpen)
   const tab = useStore(state => state.bottomTab)
   const upColor = useStore(state => state.upColor)
+  const historyPeriod = useStore(state => state.historyPeriod)
   const snapshot = useAccount(state => state)
   const [editing, setEditing] = useState<Editing | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const symbolOf = (ticker: string): MarketSymbol | undefined => market.symbol(ticker)
-  const { account, positions, orders, history, deals, connection } = snapshot
+  const { account, positions, orders, history, deals, connection, historyState } = snapshot
   const counts: Partial<Record<BottomTab, number>> = { positions: positions.length, orders: orders.length }
+  useEffect(() => { trading.setHistoryPeriod(historyPeriod) }, [trading, historyPeriod])
 
   const run = (key: string, request: () => Promise<TradeResult>): void => {
     if (busy !== null) return
@@ -142,7 +219,13 @@ export function TradePanel({ t, market, trading, useAccount, useStore, actions, 
       {extra}
     </span>
 
-  const select = (row: { ticker: string }): void => { actions.setSymbol(row.ticker) }
+  // Balance operations have no symbol, and the demo account may hold one the page does not list.
+  const select = (row: { ticker: string }): void => { if (market.symbol(row.ticker) !== undefined) actions.setSymbol(row.ticker) }
+  const orderPrice = (row: { ticker: string; price: number | null; stopLimit: number | null }): string => {
+    if (row.price === null) return t('type.market')
+    const text = price(symbolOf, row.ticker, row.price)
+    return row.stopLimit === null ? text : `${text} (${t('order.limitAt', { price: price(symbolOf, row.ticker, row.stopLimit) })})`
+  }
 
   const positionColumns: Column<TradingSnapshot['positions'][number]>[] = [
     { key: 'symbol', label: t('col.symbol'), cell: row => <strong>{row.ticker}</strong> },
@@ -176,7 +259,7 @@ export function TradePanel({ t, market, trading, useAccount, useStore, actions, 
     { key: 'time', label: t('col.placedTime'), cell: row => formatTime(row.placedAt) },
     { key: 'type', label: t('col.type'), cell: row => <span data-side={row.side}>{orderKind(t, row.side, row.type)}</span> },
     { key: 'lots', label: t('col.lots'), numeric: true, cell: row => lotsOf(symbolOf, row.ticker, row.lots) },
-    { key: 'price', label: t('col.price'), numeric: true, cell: row => editCell(row.ticket, 'price', price(symbolOf, row.ticker, row.price), t('col.price')) },
+    { key: 'price', label: t('col.price'), numeric: true, cell: row => editCell(row.ticket, 'price', orderPrice(row), t('col.price')) },
     { key: 'sl', label: t('col.stopLoss'), numeric: true, cell: row => editCell(row.ticket, 'stopLoss', price(symbolOf, row.ticker, row.stopLoss), t('col.stopLoss')) },
     { key: 'tp', label: t('col.takeProfit'), numeric: true, cell: row => editCell(row.ticket, 'takeProfit', price(symbolOf, row.ticker, row.takeProfit), t('col.takeProfit')) },
     { key: 'current', label: t('col.currentPrice'), numeric: true, cell: row => price(symbolOf, row.ticker, row.currentPrice) },
@@ -201,34 +284,47 @@ export function TradePanel({ t, market, trading, useAccount, useStore, actions, 
     { key: 'symbol', label: t('col.symbol'), cell: row => <strong>{row.ticker}</strong> },
     { key: 'ticket', label: t('col.ticket'), cell: row => row.ticket },
     { key: 'placed', label: t('col.placedTime'), cell: row => formatTime(row.placedAt) },
-    { key: 'type', label: t('col.type'), cell: row => <span data-side={row.side}>{orderKind(t, row.side, row.type)}</span> },
+    { key: 'type', label: t('col.type'), cell: row => <span data-side={row.side ?? undefined}>{orderKind(t, row.side, row.type)}</span> },
     { key: 'lots', label: t('col.lots'), numeric: true, cell: row => lotsOf(symbolOf, row.ticker, row.lots) },
-    { key: 'price', label: t('col.price'), numeric: true, cell: row => row.price === null ? t('type.market') : price(symbolOf, row.ticker, row.price) },
+    { key: 'price', label: t('col.price'), numeric: true, cell: row => orderPrice(row) },
     { key: 'fill', label: t('col.fillPrice'), numeric: true, cell: row => price(symbolOf, row.ticker, row.fillPrice) },
     { key: 'state', label: t('col.state'), cell: row => <span className="dshMkState" data-state={row.state}>{t(`state.${row.state}`)}</span> },
     { key: 'done', label: t('col.doneTime'), cell: row => formatTime(row.doneAt) },
   ]
 
-  const dealColumns: Column<TradingSnapshot['deals'][number]>[] = [
+  // A balance operation fills the symbol column with what it is, and leaves the trade columns empty.
+  const trade = (row: Deal, cell: (deal: Deal) => ReactNode): ReactNode => row.kind === 'trade' ? cell(row) : '—'
+  const dealColumns: Column<Deal>[] = [
     { key: 'time', label: t('col.time'), cell: row => formatTime(row.time) },
     { key: 'deal', label: t('col.deal'), cell: row => row.ticket },
-    { key: 'order', label: t('col.order'), cell: row => row.orderTicket },
-    { key: 'symbol', label: t('col.symbol'), cell: row => <strong>{row.ticker}</strong> },
-    { key: 'side', label: t('col.side'), cell: row => <span data-side={row.side}>{sideLabel(t, row.side)}</span> },
-    { key: 'entry', label: t('col.entry'), cell: row => t(`entry.${row.entry}`) },
-    { key: 'lots', label: t('col.lots'), numeric: true, cell: row => lotsOf(symbolOf, row.ticker, row.lots) },
-    { key: 'price', label: t('col.price'), numeric: true, cell: row => price(symbolOf, row.ticker, row.price) },
+    { key: 'order', label: t('col.order'), cell: row => row.orderTicket ?? '—' },
+    { key: 'symbol', label: t('col.symbol'), cell: row => row.kind === 'trade' ? <strong>{row.ticker}</strong> : operationLabel(t, row) },
+    { key: 'side', label: t('col.side'), cell: row => row.side === null ? '—' : <span data-side={row.side}>{sideLabel(t, row.side)}</span> },
+    { key: 'entry', label: t('col.entry'), cell: row => row.entry === null ? '—' : entryLabel(t, row.entry) },
+    { key: 'lots', label: t('col.lots'), numeric: true, cell: row => trade(row, deal => lotsOf(symbolOf, deal.ticker, deal.lots)) },
+    { key: 'price', label: t('col.price'), numeric: true, cell: row => trade(row, deal => price(symbolOf, deal.ticker, deal.price)) },
     { key: 'commission', label: t('col.commission'), numeric: true, cell: row => formatMoney(row.commission) },
     { key: 'swap', label: t('col.swap'), numeric: true, cell: row => formatMoney(row.swap) },
+    { key: 'fee', label: t('col.fee'), numeric: true, cell: row => formatMoney(row.fee) },
     { key: 'profit', label: t('col.profit'), numeric: true, cell: row => <Money value={row.profit} /> },
+    { key: 'reason', label: t('col.reason'), cell: row => reasonLabel(t, row.reason) },
   ]
+  const historyBar = <HistoryBar t={t} selection={historyPeriod} state={historyState} onSelect={actions.setHistoryPeriod} onRetry={() => { trading.refreshHistory() }} />
+  const historyEmpty = (key: 'empty.history' | 'empty.deals'): string => historyState.status === 'loading' ? t('history.loading') : t(key)
 
   const body = (): ReactNode => {
     switch (tab) {
       case 'positions': return <Table label={t('panel.positions')} columns={positionColumns} rows={positions} rowKey={row => row.ticket} empty={t('empty.positions')} onSelect={select} />
       case 'orders': return <Table label={t('panel.orders')} columns={orderColumns} rows={orders} rowKey={row => row.ticket} empty={t('empty.orders')} onSelect={select} />
-      case 'history': return <Table label={t('panel.history')} columns={historyColumns} rows={history} rowKey={row => row.ticket} empty={t('empty.history')} onSelect={select} />
-      case 'deals': return <Table label={t('panel.deals')} columns={dealColumns} rows={deals} rowKey={row => row.ticket} empty={t('empty.deals')} onSelect={select} />
+      case 'history': return <div className="dshMkHistoryBody">
+        {historyBar}
+        <Table label={t('panel.history')} columns={historyColumns} rows={history} rowKey={row => row.ticket} empty={historyEmpty('empty.history')} onSelect={select} />
+      </div>
+      case 'deals': return <div className="dshMkHistoryBody">
+        {historyBar}
+        <Table label={t('panel.deals')} columns={dealColumns} rows={deals} rowKey={row => row.ticket} rowKind={row => row.kind === 'balance' ? 'balance' : undefined}
+          empty={historyEmpty('empty.deals')} onSelect={select} footer={<DealTotals t={t} deals={deals} />} />
+      </div>
       case 'account': return <AccountTab t={t} account={account} connection={connection} upColor={upColor} onUpColor={actions.setUpColor} />
     }
   }

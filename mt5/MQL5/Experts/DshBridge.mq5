@@ -1,13 +1,14 @@
 //+------------------------------------------------------------------+
 //| DshBridge: connects this terminal to DSH Desktop, which then      |
-//| shows the account and, in later versions, trades through it.      |
+//| shows the account, quotes, charts, positions and history, and in  |
+//| a later version trades through it.                                |
 //| Attach it to any one chart. The EA dials the Desktop (MQL5        |
 //| sockets cannot listen); add the Desktop's address under           |
 //| Tools > Options > Expert Advisors > Allow WebRequest for listed   |
 //| URL. Protocol: mt5/PROTOCOL.md in the DSH Desktop repository.     |
 //+------------------------------------------------------------------+
 #property copyright "DSH Desktop"
-#property version   "1.00"
+#property version   "1.10"
 #property description "Connects this MetaTrader 5 terminal to DSH Desktop."
 #property description "Empty inputs are read from MQL5\\Files\\DshBridge\\connection.txt (host=, port=, token=)."
 
@@ -105,7 +106,7 @@ void OnTimer(void)
 
 void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest &request, const MqlTradeResult &result)
   {
-   bridge.MarkDirty();
+   bridge.OnTrade(trans);
   }
 
 void OnTick(void)

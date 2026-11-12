@@ -1,7 +1,7 @@
 /** Props shared by the market page and its panels. */
 import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-store'
 import type { HostObservable, InjectFace, PropsLocale, PropsStore, TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
-import type { MarketDataProvider } from './data/market-data.ts'
+import type { MarketDataProvider, MarketSource } from './data/market-data.ts'
 import type { TradingProvider, TradingSnapshot } from './data/trading.ts'
 import type { QuoteHub, QuoteMap } from './quotes.ts'
 import type { MarketStore } from './store.ts'
@@ -22,6 +22,7 @@ export interface MarketInjected {
   hooks: {
     quotes: HostObservable<QuoteMap>
     account: HostObservable<TradingSnapshot>
+    source: HostObservable<MarketSource>
     scheme: HostObservable<ColorScheme>
     language: HostObservable<ChartLanguage>
   }
@@ -33,6 +34,7 @@ export type MarketT = TranslateNS<'desktop-market'>
 export type MarketActions = MarketPageProps['actions']
 export type UseQuotes = SnapshotSelectorHook<QuoteMap>
 export type UseAccount = SnapshotSelectorHook<TradingSnapshot>
+export type UseSource = SnapshotSelectorHook<MarketSource>
 
 /** A short message over the page, such as a trade request's outcome. */
 export interface Notice {

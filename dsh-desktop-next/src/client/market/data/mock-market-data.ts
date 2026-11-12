@@ -8,7 +8,7 @@
  * Trading hours follow the New York 17:00 rollover: a trading day opens at 17:00 (gold: 18:00) New
  * York time on the previous evening and closes at 17:00, Monday to Friday, without holidays.
  */
-import type { Candle, HistoryRequest, HistoryResult, MarketDataProvider, MarketSymbol, Quote, Resolution } from './market-data.ts'
+import type { Candle, HistoryRequest, HistoryResult, MarketDataProvider, MarketSource, MarketSymbol, Quote, Resolution } from './market-data.ts'
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
@@ -47,8 +47,8 @@ const sessionOf = (hours: SessionHours): string => `${hhmm(hours.open)}-${hhmm(h
 function pair(ticker: string, description: string, path: MockPath, dailyTicks: number, spreadPips: number): MockSymbolSpec {
   const jpy = ticker.endsWith('JPY')
   return {
-    ticker, description, exchange: 'FX', assetClass: 'forex', baseCurrency: ticker.slice(0, 3), currency: ticker.slice(3),
-    decimals: jpy ? 3 : 5, pip: jpy ? 0.01 : 0.0001, contractSize: 100_000, minLots: 0.01, maxLots: 100, lotStep: 0.01,
+    ticker, description, exchange: 'FX', assetClass: 'forex', group: 'forex', baseCurrency: ticker.slice(0, 3), currency: ticker.slice(3),
+    decimals: jpy ? 3 : 5, tickSize: jpy ? 0.001 : 0.00001, pip: jpy ? 0.01 : 0.0001, contractSize: 100_000, minLots: 0.01, maxLots: 100, lotStep: 0.01,
     session: sessionOf(FX_HOURS), timezone: 'America/New_York', path, hours: FX_HOURS, dailyTicks, spreadPips, listed: LISTED,
   }
 }
@@ -66,8 +66,8 @@ export const MOCK_SYMBOLS: readonly MockSymbolSpec[] = Object.freeze([
   pair('GBPJPY', 'British Pound / Japanese Yen', { legs: [['GBPUSD', 1], ['USDJPY', 1]] }, 130_000, 2.4),
   pair('EURGBP', 'Euro / British Pound', { legs: [['EURUSD', 1], ['GBPUSD', -1]] }, 60_000, 1.2),
   {
-    ticker: 'XAUUSD', description: 'Gold Spot / U.S. Dollar', exchange: 'FX', assetClass: 'metal', baseCurrency: 'XAU', currency: 'USD',
-    decimals: 2, pip: 0.1, contractSize: 100, minLots: 0.01, maxLots: 50, lotStep: 0.01,
+    ticker: 'XAUUSD', description: 'Gold Spot / U.S. Dollar', exchange: 'FX', assetClass: 'metal', group: 'metal', baseCurrency: 'XAU', currency: 'USD',
+    decimals: 2, tickSize: 0.01, pip: 0.1, contractSize: 100, minLots: 0.01, maxLots: 50, lotStep: 0.01,
     session: sessionOf(METAL_HOURS), timezone: 'America/New_York',
     path: { anchor: 4_000, volatility: 0.0095, usdBeta: -0.5 }, hours: METAL_HOURS, dailyTicks: 220_000, spreadPips: 2.5, listed: LISTED,
   },
@@ -191,7 +191,9 @@ interface Calendar {
   lastTradingTime(time: number): number
 }
 
-const INTRADAY: Partial<Record<Resolution, number>> = { 1: MINUTE, 5: 5 * MINUTE, 15: 15 * MINUTE, 60: HOUR, 240: 4 * HOUR }
+const INTRADAY: Partial<Record<Resolution, number>> = {
+  1: MINUTE, 3: 3 * MINUTE, 5: 5 * MINUTE, 15: 15 * MINUTE, 30: 30 * MINUTE, 60: HOUR, 120: 2 * HOUR, 240: 4 * HOUR,
+}
 const dayOfWeek = (dayStart: number): number => (Math.floor(dayStart / DAY) + 4) % 7
 const isWeekend = (dayStart: number): boolean => { const dow = dayOfWeek(dayStart); return dow === 0 || dow === 6 }
 
@@ -329,6 +331,9 @@ export interface MockMarketDataOptions {
 interface BarSubscription { symbol: PricedSymbol; resolution: Resolution; onBar(bar: Candle): void; last?: Candle }
 interface QuoteSubscription { tickers: readonly string[]; onQuote(quote: Quote): void; sent: Map<string, number> }
 
+/** The demo source: always ready and live, its watchlist every symbol. */
+const DEMO_SOURCE: MarketSource = Object.freeze({ key: 'demo', state: 'ready', live: true, watch: Object.freeze(MOCK_SYMBOLS.map(symbol => symbol.ticker)) })
+
 /** The mock provider with a manual clock step. */
 export interface MockMarketData extends MarketDataProvider {
   /** Emit the live bars and quotes of the current clock. */
@@ -391,6 +396,8 @@ export function createMockMarketData(options: MockMarketDataOptions = {}): MockM
   }
 
   const provider: MockMarketData = {
+    source: () => DEMO_SOURCE,
+    subscribeSource: () => () => {},
     symbols: () => MOCK_SYMBOLS,
     symbol: ticker => symbols.get(ticker)?.spec,
     search(query, assetClass) {

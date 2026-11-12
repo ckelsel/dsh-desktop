@@ -1,9 +1,9 @@
 /**
  * TradingView chart host. The widget is created once per language (the library cannot switch its
- * locale at runtime) and per retry; symbol, interval, theme and price colours change in place.
- * Chart state (indicators, drawings, chart type) is saved to local storage and restored on the next
- * creation. The chart keeps TradingView's default theme colours; only the red-up setting swaps the
- * candle colours.
+ * locale at runtime), data source and retry; symbol, interval, theme and price colours change in
+ * place. Chart state (indicators, drawings, chart type) is saved to local storage per data source and
+ * restored on the next creation, so lines drawn on demo prices stay off MT5 prices. The chart keeps
+ * TradingView's default theme colours; only the red-up setting swaps the candle colours.
  */
 import { useEffect, useRef, useState } from 'react'
 import type { MarketDataProvider } from '../data/market-data.ts'
@@ -16,6 +16,9 @@ export type ChartLanguage = 'zh' | 'en'
 
 /** Chart state saved by the library: indicators, drawings and chart properties. */
 const CHART_STORAGE_KEY = 'dsh-desktop-beta.market-chart.v1'
+
+/** Where the chart state of a data source is saved; the demo data keeps the key of before per-source charts. */
+export const chartStorageKey = (source: string): string => source === 'demo' ? CHART_STORAGE_KEY : `${CHART_STORAGE_KEY}:${source}`
 
 /** Timezones the library accepts (`TimezoneId` in its declarations). */
 const TIMEZONES = new Set([
@@ -104,9 +107,9 @@ function applyPriceColors(widget: TvWidget, upColor: UpColor): void {
   }
 }
 
-function readSaved(): object | undefined {
+function readSaved(key: string): object | undefined {
   try {
-    const raw = window.localStorage.getItem(CHART_STORAGE_KEY)
+    const raw = window.localStorage.getItem(key)
     const value: unknown = raw === null ? undefined : JSON.parse(raw)
     return value !== null && typeof value === 'object' ? value : undefined
   } catch {
@@ -114,14 +117,16 @@ function readSaved(): object | undefined {
   }
 }
 
-function writeSaved(state: object): void {
-  try { window.localStorage.setItem(CHART_STORAGE_KEY, JSON.stringify(state)) } catch {
+function writeSaved(key: string, state: object): void {
+  try { window.localStorage.setItem(key, JSON.stringify(state)) } catch {
     // Full or blocked storage only loses the saved chart layout.
   }
 }
 
 export interface TradingViewChartProps {
   market: MarketDataProvider
+  /** Local storage key of the chart state; read when the widget is created. */
+  storageKey: string
   symbol: string
   resolution: string
   scheme: ColorScheme
@@ -162,7 +167,10 @@ export function TradingViewChart(props: TradingViewChartProps) {
     loadTradingView().then((tv) => {
       if (disposed) return
       const initial = latest.current
-      const datafeed = createDatafeed(initial.market, initial.labels)
+      const storageKey = initial.storageKey
+      // The datafeed dropped stale bars: load the visible range again.
+      const reload = (): void => { if (!disposed && entry.ready) widget.activeChart().resetData() }
+      const datafeed = createDatafeed(initial.market, initial.labels, () => { reload() })
       const widget = new tv.widget({
         container,
         datafeed,
@@ -177,7 +185,7 @@ export function TradingViewChart(props: TradingViewChartProps) {
         // storage server backs the save/load menu.
         disabled_features: ['header_fullscreen_button', 'header_saveload', 'popup_hints'],
         enabled_features: ['iframe_loading_same_origin'],
-        saved_data: readSaved(),
+        saved_data: readSaved(storageKey),
         auto_save_delay: 2,
         overrides: priceOverrides(initial.upColor),
         studies_overrides: volumeOverrides(initial.upColor),
@@ -185,7 +193,7 @@ export function TradingViewChart(props: TradingViewChartProps) {
       })
       const entry: Mounted = { widget, ready: false, theme: initial.scheme }
       mounted.current = entry
-      const save = (): void => { widget.save(writeSaved) }
+      const save = (): void => { widget.save((state) => { writeSaved(storageKey, state) }) }
       widget.subscribe('onAutoSaveNeeded', save)
       const onSymbolChanged = (): void => {
         const ticker = tickerOf(widget.activeChart().symbol())

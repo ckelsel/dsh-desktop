@@ -1,14 +1,14 @@
 /**
  * The account's connection badge in the trading panel bar, and the details it opens: where the MT5
- * bridge listens or why it cannot, the EA and terminal in session, the trade server link, why new
- * trades are refused, and a resync action. The details float over the page from `document.body`,
+ * bridge listens or why it cannot, the EA and terminal in session (and whether the EA needs an
+ * update), the trade server link, why new trades are refused, and a resync action. The details float over the page from `document.body`,
  * so the chart frame and the floating side panel cannot cover them.
  */
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { MenuSurface, useAnchoredPosition, useDismissOnOutsidePointer } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { Mt5Status } from '../../mt5/contract.ts'
+import { MT5_MIN_EA_VERSION, type Mt5Status } from '../../mt5/contract.ts'
 import { connectionBadge, utcOffsetText } from './connection.ts'
 import type { TradingConnection, TradingProvider } from './data/trading.ts'
 import { formatNumber, formatTime } from './format.ts'
@@ -106,6 +106,9 @@ function Details({ t, connection, resyncing, onResync }: { t: MarketT; connectio
       {listen.host === '127.0.0.1' ? t('conn.loopbackOnly') : t('conn.hostHint', { addresses: listen.addresses.join(', ') || '—' })}
     </p>}
     <Rejection t={t} status={status} />
+    {status.eaOutdated && <p className="dshMkConnHint" data-tone="warning">
+      {t('source.outdated', { version: peer?.eaVersion ?? '', minimum: MT5_MIN_EA_VERSION })}
+    </p>}
     {rows.length > 0 && <dl className="dshMkConnRows">
       {rows.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
     </dl>}

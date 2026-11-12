@@ -1,22 +1,25 @@
 /**
  * Watchlist panel, after the TradingView web watchlist: grouped rows with last price and change,
  * sortable columns, a price flash on every tick, symbol search to add rows, and the details of the
- * chart symbol below the list. Selecting a row shows the symbol on the chart.
+ * chart symbol below the list. Selecting a row shows the symbol on the chart. Groups follow the
+ * source's own grouping (an MT5 broker's top folders), in the order they first appear in the list.
  */
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Plus, Search, X } from 'lucide-react'
 import { Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
-import { ASSET_CLASSES, type MarketDataProvider, type MarketSymbol, type Quote } from './data/market-data.ts'
+import type { MarketDataProvider, MarketSymbol, Quote } from './data/market-data.ts'
 import { conversionRate, pipValue } from './data/trading.ts'
 import { formatMoney, formatNumber, formatPercent, formatPrice, formatSigned, formatVolume, trend } from './format.ts'
-import { describeSymbol, sessionLines } from './labels.ts'
+import { describeSymbol, groupLabel, sessionLines } from './labels.ts'
 import type { MarketActions, MarketPageProps, MarketT, UseQuotes } from './page-types.ts'
 import type { SortKey } from './store.ts'
 
 export interface WatchlistProps {
   t: MarketT
   market: MarketDataProvider
+  /** Quotes stream; false while they are paused at their last values. */
+  live: boolean
   useQuotes: UseQuotes
   useStore: MarketPageProps['useStore']
   actions: MarketActions
@@ -128,7 +131,7 @@ const sortValue = (symbol: MarketSymbol, quote: Quote | undefined, key: SortKey)
   key === 'ticker' ? symbol.ticker : quote === undefined ? Number.NEGATIVE_INFINITY : quote[key]
 
 /** The watchlist with the details card (see module doc). */
-export function Watchlist({ t, market, useQuotes, useStore, actions, accountCurrency }: WatchlistProps) {
+export function Watchlist({ t, market, live, useQuotes, useStore, actions, accountCurrency }: WatchlistProps) {
   const watchlist = useStore(state => state.watchlist)
   const collapsed = useStore(state => state.collapsed)
   const sort = useStore(state => state.sort)
@@ -138,20 +141,26 @@ export function Watchlist({ t, market, useQuotes, useStore, actions, accountCurr
   // Quote sorts follow live prices; list order needs no quotes.
   const sortQuotes = sort !== null && sort.key !== 'ticker' ? quotes : undefined
 
-  const groups = useMemo(() => ASSET_CLASSES.map((assetClass) => {
-    const symbols = watchlist.flatMap(ticker => {
+  const groups = useMemo(() => {
+    const byGroup = new Map<string, MarketSymbol[]>()
+    for (const ticker of watchlist) {
       const symbol = market.symbol(ticker)
-      return symbol?.assetClass === assetClass ? [symbol] : []
-    })
-    if (sort !== null) {
-      symbols.sort((left, right) => {
-        const a = sortValue(left, sortQuotes?.[left.ticker], sort.key)
-        const b = sortValue(right, sortQuotes?.[right.ticker], sort.key)
-        return (a < b ? -1 : a > b ? 1 : 0) * sort.direction
-      })
+      if (symbol === undefined) continue
+      const members = byGroup.get(symbol.group)
+      if (members === undefined) byGroup.set(symbol.group, [symbol])
+      else members.push(symbol)
     }
-    return { assetClass, symbols }
-  }).filter(group => group.symbols.length > 0), [market, watchlist, sort, sortQuotes])
+    return [...byGroup].map(([group, symbols]) => {
+      if (sort !== null) {
+        symbols.sort((left, right) => {
+          const a = sortValue(left, sortQuotes?.[left.ticker], sort.key)
+          const b = sortValue(right, sortQuotes?.[right.ticker], sort.key)
+          return (a < b ? -1 : a > b ? 1 : 0) * sort.direction
+        })
+      }
+      return { group, symbols }
+    })
+  }, [market, watchlist, sort, sortQuotes])
 
   return <section className="dshMkPanel dshMkWatchlist" aria-label={t('watchlist.title')}>
     <header className="dshMkPanelHeader">
@@ -162,6 +171,7 @@ export function Watchlist({ t, market, useQuotes, useStore, actions, accountCurr
         </button>
       </Tooltip>
     </header>
+    {!live && <div className="dshMkWlPaused" role="status">{t('watchlist.paused')}</div>}
     {adding && <AddSymbol t={t} market={market} listed={watchlist} onAdd={(ticker) => { actions.addSymbol(ticker) }} onClose={() => { setAdding(false) }} />}
     <div className="dshMkWlTable" role="grid" aria-label={t('watchlist.title')}>
       <div className="dshMkWlHead dshMkWlGrid" role="row">
@@ -186,11 +196,11 @@ export function Watchlist({ t, market, useQuotes, useStore, actions, accountCurr
       <div className="dshMkWlBody">
         {groups.length === 0 && <div className="dshMkEmpty">{t('watchlist.empty')}</div>}
         {groups.map(group => {
-          const closed = collapsed.includes(group.assetClass)
-          return <div key={group.assetClass} role="rowgroup">
-            <button type="button" className="dshMkWlGroup" aria-expanded={!closed} onClick={() => { actions.toggleGroup(group.assetClass) }}>
+          const closed = collapsed.includes(group.group)
+          return <div key={group.group} role="rowgroup">
+            <button type="button" className="dshMkWlGroup" aria-expanded={!closed} onClick={() => { actions.toggleGroup(group.group) }}>
               {closed ? <ChevronRight size={14} aria-hidden="true" /> : <ChevronDown size={14} aria-hidden="true" />}
-              <span>{t(`group.${group.assetClass}`)}</span>
+              <span>{groupLabel(t, group.group)}</span>
               <span className="dshMkMuted">{group.symbols.length}</span>
             </button>
             {!closed && group.symbols.map(symbol => <Row
@@ -219,6 +229,7 @@ export function SymbolDetails({ t, market, ticker, quote, accountCurrency }: { t
   const range = quote === undefined ? 0 : quote.high - quote.low
   const position = quote === undefined || range <= 0 ? 50 : (quote.last - quote.low) / range * 100
   const spread = quote === undefined ? undefined : (quote.ask - quote.bid) / symbol.pip
+  const session = sessionLines(t, symbol)
   return <section className="dshMkDetails" aria-label={symbol.ticker}>
     <div className="dshMkDetailsHead">
       <div>
@@ -252,9 +263,9 @@ export function SymbolDetails({ t, market, ticker, quote, accountCurrency }: { t
         <div><dt>{t('details.pipValue')}</dt><dd>{rate === null ? '—' : `${formatMoney(pipValue(symbol, 1, rate))} ${accountCurrency}`}</dd></div>
       </dl>
     </>}
-    <div className="dshMkSession">
+    {session.length > 0 && <div className="dshMkSession">
       <span className="dshMkMuted">{t('details.session')}</span>
-      {sessionLines(t, symbol).map(line => <span key={line}>{line}</span>)}
-    </div>
+      {session.map(line => <span key={line}>{line}</span>)}
+    </div>}
   </section>
 }

@@ -3,6 +3,7 @@
 //| `account.snapshot` payloads (mt5/PROTOCOL.md).                    |
 //+------------------------------------------------------------------+
 #include "Json.mqh"
+#include "Protocol.mqh"
 
 //--- Trade server time minus UTC, in seconds, rounded to the quarter hour: both clocks are
 //--- derived from the local clock, so their difference jitters by a second or so.
@@ -58,9 +59,7 @@ string DshMarginModeName(const long mode)
 //--- `account.snapshot`; money in the account currency with its decimals.
 string DshAccountPayload(void)
   {
-   int digits = (int)AccountInfoInteger(ACCOUNT_CURRENCY_DIGITS);
-   if(digits < 0 || digits > 8)
-      digits = 2;
+   int digits = DshMoneyDigits();
    CDshJsonObject account;
    account.Str("login", IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN)));
    account.Str("name", AccountInfoString(ACCOUNT_NAME));

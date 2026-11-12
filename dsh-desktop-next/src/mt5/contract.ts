@@ -1,7 +1,8 @@
 /**
- * What the MT5 bridge shares with the preload and the market page: IPC channel names and the
- * public bridge status. Types and constants only, so renderer bundles import it without Node.
- * The wire protocol itself is specified in `mt5/PROTOCOL.md` at the repository root.
+ * What the MT5 bridge shares with the preload and the market page: IPC channel names, the public
+ * bridge status, and the terminal data the EA reports. Types and constants only, so renderer
+ * bundles import it without Node. The wire protocol itself is specified in `mt5/PROTOCOL.md` at
+ * the repository root; its snake_case fields are camelCase here.
  */
 
 /** IPC channels between the main process bridge and the application renderer. */
@@ -12,10 +13,30 @@ export const MT5_IPC = {
   request: 'dsh-mt5:request',
   token: 'dsh-mt5:token',
   regenerateToken: 'dsh-mt5:regenerate-token',
+  catalog: 'dsh-mt5:catalog',
+  catalogChanged: 'dsh-mt5:catalog-changed',
+  trading: 'dsh-mt5:trading',
+  tradingChanged: 'dsh-mt5:trading-changed',
+  subscribe: 'dsh-mt5:subscribe',
+  ticks: 'dsh-mt5:ticks',
+  bars: 'dsh-mt5:bars',
+  tradeEvents: 'dsh-mt5:trade-events',
+  historyBars: 'dsh-mt5:history-bars',
+  historyTrades: 'dsh-mt5:history-trades',
 } as const
 
 /** TCP port the bridge listens on unless the user picks another. */
 export const MT5_DEFAULT_PORT = 19500
+
+/** The oldest EA that serves symbols, quotes, bars, positions, orders and history. An older EA is
+ * still connected for the account, and the Desktop asks the user to update it. */
+export const MT5_MIN_EA_VERSION = '1.1.0'
+
+/** Subscriptions the page may hold at once. */
+export const MT5_MAX_QUOTES = 200
+export const MT5_MAX_BAR_STREAMS = 20
+/** Most bars one history request returns. */
+export const MT5_MAX_HISTORY_BARS = 5000
 
 /**
  * Where the bridge stands:
@@ -105,6 +126,240 @@ export interface Mt5Account {
   marginSoMode: 'percent' | 'money'
 }
 
+/** One symbol of the broker's catalogue (`symbols.list`). */
+export interface Mt5Symbol {
+  name: string
+  description: string
+  /** The broker's folder path, such as `Forex\Majors\EURUSD`. */
+  path: string
+  currencyBase: string
+  currencyProfit: string
+  currencyMargin: string
+  digits: number
+  point: number
+  /** Smallest price change (`SYMBOL_TRADE_TICK_SIZE`). */
+  tickSize: number
+  contractSize: number
+  volumeMin: number
+  volumeMax: number
+  volumeStep: number
+  tradeMode: 'disabled' | 'long_only' | 'short_only' | 'close_only' | 'full'
+  /** `SYMBOL_TRADE_CALC_MODE` without its prefix, such as `forex` or `cfdindex`. */
+  calcMode: string
+  /** `SYMBOL_SECTOR` without its prefix, such as `currency` or `indexes`. */
+  sector: string
+  /** In the Market Watch window. */
+  selected: boolean
+}
+
+/** The catalogue of the connected trade server. */
+export interface Mt5Catalog {
+  /** The trade server the symbols belong to. */
+  server: string
+  symbols: readonly Mt5Symbol[]
+  /** The Market Watch symbols, in the window's order. */
+  watch: readonly string[]
+}
+
+/** MT5 timeframes the bridge serves. */
+export type Mt5Timeframe = 'M1' | 'M3' | 'M5' | 'M15' | 'M30' | 'H1' | 'H2' | 'H4' | 'D1' | 'W1'
+export const MT5_TIMEFRAMES: readonly Mt5Timeframe[] = ['M1', 'M3', 'M5', 'M15', 'M30', 'H1', 'H2', 'H4', 'D1', 'W1']
+
+/** A quote of a subscribed symbol (`market.tick`); the day's figures are null until MT5 has them. */
+export interface Mt5Tick {
+  symbol: string
+  /** Unix ms. */
+  time: number
+  bid: number
+  ask: number
+  dayOpen: number | null
+  dayHigh: number | null
+  dayLow: number | null
+  /** The previous day's close. */
+  prevClose: number | null
+  /** Ticks today. */
+  dayVolume: number | null
+  /** Within the symbol's trading sessions. */
+  sessionOpen: boolean
+}
+
+/** One bid bar. Intraday bars open at their UTC moment; daily and weekly bars at 00:00 UTC of their server date. */
+export interface Mt5BarData {
+  /** Unix ms. */
+  time: number
+  open: number
+  high: number
+  low: number
+  close: number
+  /** Tick volume. */
+  volume: number
+}
+
+/** The current bar of a subscribed stream (`market.bar`). */
+export interface Mt5Bar extends Mt5BarData {
+  symbol: string
+  timeframe: Mt5Timeframe
+}
+
+export interface Mt5BarStream {
+  symbol: string
+  timeframe: Mt5Timeframe
+}
+
+/** Everything the page streams: replaced as a whole on each change. */
+export interface Mt5Subscription {
+  quotes: readonly string[]
+  bars: readonly Mt5BarStream[]
+}
+
+export interface Mt5HistoryBarsRequest extends Mt5BarStream {
+  /** Bars that open before this Unix ms. */
+  to: number
+  count: number
+}
+
+/** How a history request waits for the terminal. */
+export interface Mt5HistoryBarsOptions {
+  /**
+   * Answer with the bars the terminal has while it still downloads older ones of the page,
+   * instead of once it has all of them; default false. Either way the answer waits while the
+   * terminal builds the series.
+   */
+  partial?: boolean
+}
+
+export interface Mt5HistoryBars {
+  /** Oldest first. */
+  bars: readonly Mt5BarData[]
+  /** No bars open before `to`. */
+  noData: boolean
+  /** Older bars of the page are still downloading, and asking again returns them; only for a partial request. */
+  partial?: boolean
+}
+
+export type Mt5PendingType = 'buy_limit' | 'sell_limit' | 'buy_stop' | 'sell_stop' | 'buy_stop_limit' | 'sell_stop_limit'
+export type Mt5OrderType = 'buy' | 'sell' | Mt5PendingType | 'close_by'
+
+/** An open position; prices in the symbol's, money in the account currency. */
+export interface Mt5Position {
+  ticket: string
+  symbol: string
+  side: 'buy' | 'sell'
+  volume: number
+  priceOpen: number
+  sl: number | null
+  tp: number | null
+  priceCurrent: number
+  profit: number
+  swap: number
+  /** Unix ms. */
+  time: number
+  comment: string
+  magic: number
+}
+
+/** A pending order. */
+export interface Mt5Order {
+  ticket: string
+  symbol: string
+  type: Mt5PendingType
+  /** `ORDER_STATE` without its prefix, such as `placed` or `request_modify`. */
+  state: string
+  /** Lots not yet filled. */
+  volume: number
+  volumeInitial: number
+  /** The trigger price; for a stop-limit order, the stop price. */
+  price: number
+  /** The limit price a stop-limit order places once triggered. */
+  stopLimit: number | null
+  sl: number | null
+  tp: number | null
+  priceCurrent: number
+  /** Unix ms. */
+  time: number
+  /** `gtc`, `day`, `specified` or `specified_day`. */
+  timeType: string
+  /** Unix ms; null for none. */
+  expiration: number | null
+  comment: string
+  magic: number
+}
+
+/** Open positions and pending orders of the session in use. */
+export interface Mt5Trading {
+  positions: readonly Mt5Position[]
+  orders: readonly Mt5Order[]
+}
+
+/** A finished order (`history.query`). */
+export interface Mt5HistoryOrder {
+  ticket: string
+  symbol: string
+  type: Mt5OrderType
+  /** `ORDER_STATE` without its prefix, such as `filled`, `canceled` or `expired`. */
+  state: string
+  volumeInitial: number
+  /** Lots left unfilled. */
+  volumeCurrent: number
+  /** The requested price; null when MT5 reports none. */
+  price: number | null
+  stopLimit: number | null
+  sl: number | null
+  tp: number | null
+  /** Unix ms. */
+  timeSetup: number
+  timeDone: number
+  position: string | null
+  /** The opposite position of a close-by order. */
+  positionBy: string | null
+  /** `ORDER_REASON` without its prefix: `client`, `mobile`, `web`, `expert`, `sl`, `tp` or `so`. */
+  reason: string
+  comment: string
+  magic: number
+}
+
+/** A deal: a trade fill, or a balance operation such as a deposit. */
+export interface Mt5Deal {
+  ticket: string
+  order: string | null
+  position: string | null
+  /** Empty for balance operations. */
+  symbol: string
+  /** `DEAL_TYPE` without its prefix: `buy` and `sell` are trades; the rest, such as `balance`,
+   * `credit`, `commission` or `dividend`, are balance operations. */
+  type: string
+  entry: 'in' | 'out' | 'inout' | 'out_by'
+  volume: number
+  price: number
+  commission: number
+  swap: number
+  fee: number
+  profit: number
+  /** Unix ms. */
+  time: number
+  /** `DEAL_REASON` without its prefix, such as `client`, `mobile`, `sl`, `tp` or `so`. */
+  reason: string
+  comment: string
+  magic: number
+}
+
+/** Orders and deals of a time range, newest first. */
+export interface Mt5TradeHistory {
+  orders: readonly Mt5HistoryOrder[]
+  deals: readonly Mt5Deal[]
+  /** The EA left out the oldest rows to stay within its limits. */
+  truncated: boolean
+}
+
+/** A new deal or finished order (`trade.event`); history covering it is out of date. */
+export interface Mt5TradeEvent {
+  type: 'deal_add' | 'history_add'
+  deal: string | null
+  order: string | null
+  position: string | null
+  symbol: string
+}
+
 /** Public bridge status: everything except the token. */
 export interface Mt5Status {
   phase: Mt5BridgePhase
@@ -121,6 +376,8 @@ export interface Mt5Status {
   syncedAt: number | null
   /** The last connection the bridge turned away, for setup diagnostics. */
   lastRejection: { address: string; reason: Mt5RejectReason; at: number } | null
+  /** The connected EA is older than `MT5_MIN_EA_VERSION`: it serves the account only. */
+  eaOutdated: boolean
 }
 
 /** The renderer API the preload exposes as `window.dshMt5`. */
@@ -132,4 +389,18 @@ export interface Mt5RendererBridge {
   request(type: string, payload?: Record<string, unknown>): Promise<Record<string, unknown>>
   token(): Promise<string>
   regenerateToken(): Promise<string>
+  /** The catalogue of the trade server last synced; null before the first sync, or while the bridge is off. */
+  catalog(): Promise<Mt5Catalog | null>
+  onCatalog(listener: (catalog: Mt5Catalog | null) => void): () => void
+  /** Positions and orders of the session in use; null while none is in sync. */
+  trading(): Promise<Mt5Trading | null>
+  onTrading(listener: (trading: Mt5Trading | null) => void): () => void
+  /** Replace the page's quote and bar subscriptions. */
+  subscribe(subscription: Mt5Subscription): Promise<void>
+  onTicks(listener: (ticks: readonly Mt5Tick[]) => void): () => void
+  onBars(listener: (bars: readonly Mt5Bar[]) => void): () => void
+  onTradeEvents(listener: (events: readonly Mt5TradeEvent[]) => void): () => void
+  historyBars(request: Mt5HistoryBarsRequest, options?: Mt5HistoryBarsOptions): Promise<Mt5HistoryBars>
+  /** Orders and deals with times in [from, to), Unix ms. */
+  historyTrades(range: { from: number; to: number }): Promise<Mt5TradeHistory>
 }

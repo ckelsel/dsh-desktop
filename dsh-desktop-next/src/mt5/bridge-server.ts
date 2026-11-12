@@ -4,7 +4,8 @@
  * carrying the bridge token within the handshake timeout. One authenticated session exists at a
  * time: another account's EA is refused as busy, and a new connection of the same account
  * replaces a session the old EA left behind. After the handshake both sides ping every heartbeat
- * interval, and a session silent for the idle timeout is closed.
+ * interval, and a session silent for the idle timeout is closed. Responses and events carry the
+ * sequence number of their frame, so a caller can tell which of two arrived later.
  */
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
 import { createServer, type AddressInfo, type Server, type Socket } from 'node:net'
@@ -51,7 +52,8 @@ export type Mt5ServerEvent =
   | { kind: 'rejected'; address: string; reason: Mt5RejectReason; detail: string }
   | { kind: 'session-open'; session: Mt5Session }
   | { kind: 'session-closed'; session: Mt5Session; reason: string }
-  | { kind: 'event'; session: Mt5Session; type: string; payload: Mt5Payload }
+  /** `seq` orders this event among the session's events and responses. */
+  | { kind: 'event'; session: Mt5Session; type: string; payload: Mt5Payload; seq: number }
   /** An authenticated session sent a frame that breaks the protocol; it was dropped. */
   | { kind: 'protocol-error'; session: Mt5Session; detail: string }
 
@@ -73,6 +75,13 @@ export interface Mt5RequestOptions {
   timeoutMs?: number
 }
 
+/** A response payload, and the sequence number of its frame. */
+export interface Mt5Answer {
+  payload: Mt5Payload
+  /** Frames arrive in the order the EA sent them: a higher number is newer. */
+  seq: number
+}
+
 const MAX_PENDING_CONNECTIONS = 4
 /** Output a peer may leave unread before the session is dropped. */
 const MAX_WRITE_BUFFER = 16 * 1024 * 1024
@@ -81,7 +90,7 @@ const KEEPALIVE_MS = 10_000
 const LINGER_MS = 1_000
 
 interface Pending {
-  resolve(payload: Mt5Payload): void
+  resolve(answer: Mt5Answer): void
   reject(error: Error): void
   timer: NodeJS.Timeout
 }
@@ -123,6 +132,8 @@ export class Mt5BridgeServer {
   private config: Mt5ServerConfig | undefined
   private active: Connection | undefined
   private sessions = 0
+  /** Sequence number of the last frame an authenticated session sent. */
+  private frames = 0
   /** Start and stop calls apply one at a time, in order. */
   private queue: Promise<void> = Promise.resolve()
 
@@ -192,11 +203,19 @@ export class Mt5BridgeServer {
    * @throws Mt5RequestError when no EA is connected, the EA fails the request, it times out, or the session ends first.
    */
   request(type: string, payload: Mt5Payload = {}, options: Mt5RequestOptions = {}): Promise<Mt5Payload> {
+    return this.exchange(type, payload, options).then(answer => answer.payload)
+  }
+
+  /**
+   * Like `request`, with the sequence number of the response frame.
+   * @throws Mt5RequestError when no EA is connected, the EA fails the request, it times out, or the session ends first.
+   */
+  exchange(type: string, payload: Mt5Payload = {}, options: Mt5RequestOptions = {}): Promise<Mt5Answer> {
     const connection = this.active
     if (connection === undefined || connection.closed) return Promise.reject(new Mt5RequestError('not_connected', 'No EA is connected'))
     const id = options.id ?? randomUUID()
     if (connection.pending.has(id)) return Promise.reject(new Mt5RequestError('duplicate_id', `Request ${id} is already in flight`))
-    return new Promise<Mt5Payload>((resolve, reject) => {
+    return new Promise<Mt5Answer>((resolve, reject) => {
       const timer = setTimeout(() => {
         connection.pending.delete(id)
         reject(new Mt5RequestError('timeout', `${type} got no answer`))
@@ -372,18 +391,19 @@ export class Mt5BridgeServer {
   }
 
   private dispatch(connection: Connection, session: Mt5Session, frame: Mt5Frame): void {
+    const seq = ++this.frames
     switch (frame.kind) {
       case 'response': {
         const pending = connection.pending.get(frame.id)
         if (pending === undefined) return
         connection.pending.delete(frame.id)
         clearTimeout(pending.timer)
-        if (frame.ok) pending.resolve(frame.payload)
+        if (frame.ok) pending.resolve({ payload: frame.payload, seq })
         else pending.reject(new Mt5RequestError(frame.error.code, frame.error.message, frame.error.retcode))
         return
       }
       case 'event':
-        if (frame.type !== 'system.ping') this.emit({ kind: 'event', session, type: frame.type, payload: frame.payload })
+        if (frame.type !== 'system.ping') this.emit({ kind: 'event', session, type: frame.type, payload: frame.payload, seq })
         return
       case 'request':
         // The EA asks the Desktop nothing in protocol v1 beyond its hello.

@@ -505,4 +505,32 @@ public:
    void              Null(const string key) { Key(key); StringAdd(m_text, "null"); }
    string            Text(void) const { return m_text + "}"; }
   };
+
+//+------------------------------------------------------------------+
+//| Builds one JSON array, element by element.                       |
+//+------------------------------------------------------------------+
+class CDshJsonArray
+  {
+private:
+   string            m_text;
+   int               m_count;
+
+   void              Next(void)
+     {
+      if(m_count > 0)
+         StringAdd(m_text, ",");
+      m_count++;
+     }
+
+public:
+                     CDshJsonArray(void) : m_text("["), m_count(0) {}
+
+   void              Raw(const string json) { Next(); StringAdd(m_text, json); }
+   void              Str(const string value) { Next(); StringAdd(m_text, DshJsonQuote(value)); }
+   void              Int(const long value) { Next(); StringAdd(m_text, IntegerToString(value)); }
+   void              Num(const double value, const int digits) { Next(); StringAdd(m_text, DshJsonNumber(value, digits)); }
+   int               Count(void) const { return m_count; }
+   int               Length(void) const { return StringLen(m_text); }
+   string            Text(void) const { return m_text + "]"; }
+  };
 //+------------------------------------------------------------------+
