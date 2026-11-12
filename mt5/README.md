@@ -67,8 +67,8 @@ The sources use ASCII only, with CRLF line endings.
    - With MT5 on another computer: turn on *Allow LAN connections*. The Desktop then accepts an EA from any computer once it proves the token, so there is no address to enter.
    - Copy the *EA token*.
 6. **Give the EA the connection details,** in either of two ways:
-   - **EA inputs:** `DesktopHost`, `DesktopPort`, `Token`.
-   - **Connection file:** `MQL5\Files\DshBridge\connection.txt`, read when the inputs are empty. Lines starting with `#` are comments.
+   - **EA inputs:** `DesktopHost` (default `127.0.0.1`), `DesktopPort` (default `19500`) and `Token`. On the same computer, only the token needs filling in. With the Desktop on another computer, set `DesktopHost` to that computer's IP.
+   - **Connection file:** `MQL5\Files\DshBridge\connection.txt`, read for the inputs left empty (`DesktopPort`: 0). Lines starting with `#` are comments.
 
      ```
      host=127.0.0.1
@@ -76,7 +76,7 @@ The sources use ASCII only, with CRLF line endings.
      token=<the token copied from Settings>
      ```
 
-   - **Precedence:** inputs win over the file. With neither address nor port set, the EA dials `127.0.0.1:19500`, so on the same computer the token is all it needs.
+   - **Precedence:** an input that is filled in wins over the file. To take the address or the port from the file, clear `DesktopHost` or set `DesktopPort` to 0.
    - **When it applies:** the EA reads the connection file only when it starts. After changing the file, remove the EA from its chart and attach it again.
 7. **Attach the EA:** drag DshBridge from Navigator → Expert Advisors onto any chart.
 8. **Allow algo trading** (needed for trading): turn on the *Algo Trading* button in MT5's toolbar, and check *Allow Algo Trading* on the Common tab of the EA's properties. Watching the markets needs neither. The connection details in the Desktop show both, and the order ticket says which one is off.
@@ -90,12 +90,14 @@ Within a few seconds, the connection badge at the bottom of the market page turn
 
 ## Trading
 
-- **Trading risk warning:** before the first trade, the Desktop shows the *Trading risk warning and disclaimer*. Trading starts once the user checks the box and agrees.
+- **Trading risk warning:** before the first trade, the Desktop shows the *Trading Risk Warning and Disclaimer*. Trading starts once the user checks the box and agrees.
   - It applies alike to demo, contest and real accounts: once agreed, all of them trade, and a real account trades real money.
   - Agreeing does not carry out the action that brought up the warning; the user repeats it.
   - When the warning changes, the user agrees again.
+  - The dialog opens in the Desktop's language. A switch at its top shows the other version; the English version prevails.
+  - **Its text** is in `dsh-plugin-desktop-beta/src/client/mt5-disclaimer.zh.md` and `mt5-disclaimer.en.md`, which the Desktop shows as written; the Chinese file's header comment describes the format. Edit Beta's copies, then run `corepack yarn sync:desktop-variants`. After a change of substance, raise `MT5_DISCLAIMER_VERSION` in `src/mt5/contract.ts`, and everyone agrees again.
   - Settings → MT5 connection shows the warning and withdraws the agreement. After withdrawing, the user cannot trade, but can still watch the markets.
-- **Account type:** the order ticket tags the account beside the submit button: *Real*, *Demo* or *Contest*. The real tag stands out. Check it before every order.
+- **Account type:** the Account tab of the trading panel shows whether the account is *Real*, *Demo* or *Contest*. Check it before every order.
 - **What it does:**
   - Orders: market, limit and stop orders, with lots, take profit and stop loss.
   - Modify: a position's take profit and stop loss; a pending order's price, take profit and stop loss.

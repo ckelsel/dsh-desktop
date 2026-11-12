@@ -36,8 +36,11 @@ export const MT5_DEFAULT_PORT = 19500
  * signed trade requests). An older EA speaks plain TCP and fails the TLS handshake. */
 export const MT5_MIN_EA_VERSION = '1.2.0'
 
-/** The trading risk disclaimer's version. A change of substance raises it, and every user agrees again. */
-export const MT5_DISCLAIMER_VERSION = 1
+/**
+ * The trading risk disclaimer's version; its text is in `src/client/mt5-disclaimer.zh.md` and
+ * `mt5-disclaimer.en.md`. A change of substance raises it, and every user agrees again.
+ */
+export const MT5_DISCLAIMER_VERSION = 2
 
 /** Subscriptions the page may hold at once. */
 export const MT5_MAX_QUOTES = 200

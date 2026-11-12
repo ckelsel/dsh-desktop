@@ -11,14 +11,14 @@
 #property copyright "DSH Desktop"
 #property version   "1.20"
 #property description "Connects this MetaTrader 5 terminal to DSH Desktop."
-#property description "Empty inputs are read from MQL5\\Files\\DshBridge\\connection.txt (host=, port=, token=)."
+#property description "Inputs left empty (port: 0) are read from MQL5\\Files\\DshBridge\\connection.txt (host=, port=, token=)."
 
 #include <DshBridge/Bridge.mqh>
 
-input string DesktopHost = "";    // Desktop address (empty: connection.txt, else 127.0.0.1)
-input int    DesktopPort = 0;     // Desktop port (0: connection.txt, else 19500)
-input string Token       = "";    // Bridge token from Desktop Settings > MT5 connection
-input int    TimerMs     = 100;   // Poll interval, ms
+input string DesktopHost = "127.0.0.1"; // Desktop address (127.0.0.1, or the Desktop computer's LAN IP)
+input int    DesktopPort = 19500;       // Desktop port
+input string Token       = "";          // Bridge token from Desktop Settings > MT5 connection
+input int    TimerMs     = 100;         // Poll interval, ms
 
 #define DSH_CONNECTION_FILE "DshBridge\\connection.txt"
 #define DSH_DEFAULT_HOST    "127.0.0.1"

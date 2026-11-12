@@ -519,21 +519,6 @@ const STYLES = `
 .dshMkSubmit:hover:not(:disabled) { filter: brightness(1.08); }
 .dshMkSubmit:disabled { opacity: 0.45; cursor: default; }
 .dshMkHint { margin: 0; color: var(--mk-text-3); font-size: 11px; text-align: center; }
-/* The account's type beside the submit button; a real-money account stands out. */
-.dshMkSubmitRow { display: flex; align-items: stretch; gap: 6px; }
-.dshMkSubmitRow > .dshMkSubmit { flex: 1 1 auto; min-width: 0; }
-.dshMkAccountTag {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  padding: 0 8px;
-  border: 0.5px solid var(--mk-line);
-  border-radius: 8px;
-  color: var(--mk-text-2);
-  font-size: 12px;
-  font-weight: 600;
-}
-.dshMkAccountTag[data-mode='real'] { border-color: var(--mk-error); color: #fff; background: var(--mk-error); }
 .dshMkHint .dshMkTextButton { margin-left: 4px; }
 
 /* Trading panel. */

@@ -278,13 +278,9 @@ export function OrderTicket({ t, market, trading, useQuotes, useAccount, useStor
       </dl>
 
       {(error ?? warning) !== null && <p className="dshMkMessage" data-tone={error === null ? 'warning' : 'error'} role="alert">{error ?? warning}</p>}
-      <div className="dshMkSubmitRow">
-        {source === 'mt5' && account !== null && <span className="dshMkAccountTag" data-mode={account.mode}
-          title={account.mode === 'real' ? t('ticket.realTitle') : undefined}>{t(`ticket.${account.mode}`)}</span>}
-        <button type="button" className="dshMkSubmit" data-side={side} disabled={error !== null || sending || (blocked !== undefined && !needsDisclaimer)} onClick={submit}>
-          {sending ? t('ticket.sending') : submitLabel}
-        </button>
-      </div>
+      <button type="button" className="dshMkSubmit" data-side={side} disabled={error !== null || sending || (blocked !== undefined && !needsDisclaimer)} onClick={submit}>
+        {sending ? t('ticket.sending') : submitLabel}
+      </button>
       {source === 'mock' && <p className="dshMkHint">{t('ticket.demoHint')}</p>}
       {needsDisclaimer
         ? <p className="dshMkHint">{t('ticket.disclaimerHint')} <button type="button" className="dshMkTextButton" onClick={onDisclaimer}>{t('ticket.disclaimerOpen')}</button></p>
