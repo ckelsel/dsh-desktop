@@ -40,6 +40,11 @@ export interface Mt5GatewayRuntimeOptions {
   url?: string
   /** The transport to ride, for tests; the platform WebSocket by default. */
   transport?: GatewayTransportFactory
+  /**
+   * Which terminal to work with: the real one (default), or a strategy-tester agent — a 1:1
+   * replay of which stands in for the market on a closed weekend.
+   */
+  terminal?: 'real' | 'tester'
   log: Mt5GatewayLog
   now?: () => number
 }
@@ -98,6 +103,7 @@ export class Mt5GatewayRuntime {
   private readonly link: Mt5GatewayLink
   private readonly now: () => number
   private readonly log: Mt5GatewayLog
+  private readonly terminalKind: 'real' | 'tester'
   private readonly listeners = new Set<(status: Mt5Status) => void>()
   private readonly dataListeners = new Set<(event: Mt5DataEvent) => void>()
 
@@ -141,6 +147,7 @@ export class Mt5GatewayRuntime {
   constructor(options: Mt5GatewayRuntimeOptions) {
     this.now = options.now ?? Date.now
     this.log = options.log
+    this.terminalKind = options.terminal === 'tester' ? 'tester' : 'real'
     this.link = new Mt5GatewayLink({ url: options.url ?? MT5_GATEWAY_URL, transport: options.transport, log: options.log, now: this.now })
     this.link.onConnection(up => { this.onConnection(up) })
     this.link.onTerminals(terminals => { this.onTerminals(terminals) })
@@ -340,9 +347,13 @@ export class Mt5GatewayRuntime {
       this.scheduleRecovery(RETRY_MS)
       return
     }
-    // The real terminal wins over a strategy-tester agent; between equals, the first probed.
-    const chosen = probed.find(probe => !probe.dataPath.includes('\\Tester\\')) ?? probed[0]!
-    if (chosen.dataPath.includes('\\Tester\\')) this.log('mt5.gateway-tester-terminal', { terminal_id: chosen.terminalId }, 'warn')
+    // The kind asked for wins; a tester preference takes a replay agent, the default the real
+    // terminal. Between equals, the first probed.
+    const wanted = this.terminalKind === 'tester'
+    const chosen = probed.find(probe => probe.dataPath.includes('\\Tester\\') === wanted) ?? probed[0]!
+    if (chosen.dataPath.includes('\\Tester\\') !== wanted) {
+      this.log('mt5.gateway-terminal-kind-missed', { wanted: this.terminalKind, terminal_id: chosen.terminalId }, 'warn')
+    }
     this.terminalId = chosen.terminalId
     this.lastSeq = null
     this.publish()

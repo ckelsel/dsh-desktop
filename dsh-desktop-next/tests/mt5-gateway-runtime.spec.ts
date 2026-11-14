@@ -156,6 +156,23 @@ describe('terminal choice', () => {
     expect(gateway.calls('terminal.get').map(params => params.terminal_id).slice(0, 2)).toEqual([TESTER, TERMINAL])
   })
 
+  it('prefers the replay agent when asked for a tester, with the real terminal listed first', async () => {
+    runtime = new Mt5GatewayRuntime({
+      terminal: 'tester',
+      transport: gateway.transport,
+      log: (event, _fields, level = 'info') => { logs.push({ event, level }) },
+    })
+    runtime.subscribe(status => { statuses.push(status) })
+    runtime.subscribeData(event => { data.push(event) })
+    scriptTerminal()
+    gateway.handlers.set('terminal.get', params => ({ data_path: params.terminal_id === TESTER ? 'H:\\Tester\\ACFC...\\Agent-3000' : 'H:\\Terminal\\ACFC...', connected: true, trade_allowed: true, dlls_allowed: true, build: 5120, name: '', company: '' }))
+    await runtime.configure({ mt5Enabled: true, mt5DisclaimerVersion: MT5_DISCLAIMER_VERSION, mt5DisclaimerAcceptedAt: 1 }, { safeMode: false })
+    gateway.hello([{ terminal_id: TERMINAL }, { terminal_id: TESTER }])
+    await vi.waitFor(() => expect(runtime.status().phase).toBe('ready'))
+    const routed = gateway.sent.filter(entry => entry.method === 'account.get')
+    expect(routed.every(entry => entry.params.terminal_id === TESTER)).toBe(true)
+  })
+
   it('returns to listening when the terminal in use leaves the gateway, and recovers on its return', async () => {
     await start()
     gateway.terminal('disconnected', TERMINAL)
