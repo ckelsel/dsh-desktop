@@ -21,6 +21,7 @@ import {
   MT5_DISCLAIMER_VERSION, type Mt5Account, type Mt5Bar, type Mt5BlockReason, type Mt5Catalog, type Mt5HistoryBars, type Mt5HistoryBarsOptions,
   type Mt5HistoryBarsRequest, type Mt5Order, type Mt5Position, type Mt5Status, type Mt5Subscription, type Mt5Symbol, type Mt5SymbolInfo,
   type Mt5TerminalStatus, type Mt5Tick, type Mt5TradeEvent, type Mt5TradeHistory, type Mt5TradeInput, type Mt5TradeOutcome, type Mt5Trading,
+  type Mt5DataEvent,
 } from './contract.ts'
 import {
   parseAccount, parseBars, parseHistoryAnswer, parseOrders, parsePositions, parseSubscribeAnswer, parseSymbolInfo,
@@ -56,12 +57,7 @@ export interface Mt5BridgeRuntimeOptions {
 }
 
 /** Market and trading data, for the IPC layer to forward to the page. */
-export type Mt5DataEvent =
-  | { kind: 'catalog'; catalog: Mt5Catalog | null }
-  | { kind: 'trading'; trading: Mt5Trading | null }
-  | { kind: 'ticks'; ticks: readonly Mt5Tick[] }
-  | { kind: 'bars'; bars: readonly Mt5Bar[] }
-  | { kind: 'trade-event'; event: Mt5TradeEvent }
+export type { Mt5DataEvent } from './contract.ts'
 
 /** Requests the renderer may send through the bridge; the rest stay main-process only. */
 const RENDERER_REQUESTS: ReadonlySet<string> = new Set(['system.status', 'account.snapshot'])

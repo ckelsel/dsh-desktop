@@ -6,8 +6,7 @@
  */
 import { ipcMain, type BrowserWindow, type IpcMainInvokeEvent, type WebContents } from 'electron'
 import { APP_URL } from '../ipc.ts'
-import type { Mt5BridgeRuntime } from './bridge-runtime.ts'
-import { MT5_IPC, type Mt5Bar, type Mt5Status, type Mt5Tick, type Mt5TradeEvent } from './contract.ts'
+import { MT5_IPC, type Mt5Bar, type Mt5RuntimeApi, type Mt5Status, type Mt5Tick, type Mt5TradeEvent } from './contract.ts'
 import {
   parseHistoryBarsInput, parseHistoryBarsOptions, parseHistoryRangeInput, parseSubscriptionInput, parseSymbolInput, parseTradeInput,
 } from './renderer-input.ts'
@@ -43,7 +42,7 @@ function throttle(intervalMs: number, push: () => void): { schedule(): void; can
  * risk disclaimer, or its withdrawal, in the preferences and applies them to the bridge.
  * @returns a function that removes them.
  */
-export function installMt5Ipc(bridge: Mt5BridgeRuntime, window: () => BrowserWindow | undefined,
+export function installMt5Ipc(bridge: Mt5RuntimeApi, window: () => BrowserWindow | undefined,
   setDisclaimer: (accepted: boolean) => Promise<void>): () => void {
   const target = (): BrowserWindow | undefined => {
     const owner = window()

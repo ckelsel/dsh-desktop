@@ -61,8 +61,8 @@ import { deElevateAtStartup, lowIntegrityAtStartup, windowsElevation } from './w
 import { createSandboxLaunchReporter, gpuLaunchFailure, lowIntegrityLaunchDialog, rendererLaunchFailure } from './sandbox-launch.ts'
 import { pickOutsideProgramDirectory, programDirectory, programDirectoryRefusal, refusedProgramDirectoryOverlap, type ProgramDirectoryOverlap, type ProgramDirectoryPurpose } from './program-directory.ts'
 import { startCrashReporting } from './crash-reporting.ts'
-import { Mt5BridgeRuntime } from './mt5/bridge-runtime.ts'
 import { MT5_DISCLAIMER_VERSION } from './mt5/contract.ts'
+import { Mt5GatewayRuntime } from './mt5/gateway-runtime.ts'
 import { installMt5Ipc } from './mt5/mt5-ipc.ts'
 
 // Below Medium integrity Chromium cannot start its GPU process and ends the launch without a word (#1564).
@@ -245,9 +245,8 @@ const runtime = new NextDesktopRuntime({
   },
 })
 if (ownsInstance) runtime.diagnostics.crashDumps = crashDumps
-/** The TCP server the DshBridge EA connects to; independent of the Host, so Host restarts keep the EA connected. */
-const mt5 = new Mt5BridgeRuntime({
-  home, desktopVersion: `DSH NEXT ${version}`, lanAddresses: () => desktopLanAddresses(),
+/** The MT5 bridge: an SDK of the local MT5Bridge gateway, where the terminal's DLL has dialed in. */
+const mt5 = new Mt5GatewayRuntime({
   log: (event, fields, level = 'info') => { runtime.diagnostics.record({ source: 'mt5', event, level, ...(fields === undefined ? {} : { fields }) }) },
 })
 const platformLogin = new PlatformLoginWindow({

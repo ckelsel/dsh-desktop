@@ -361,6 +361,14 @@ export interface Mt5TradeHistory {
   truncated: boolean
 }
 
+/** Market and trading data, for the IPC layer to forward to the page. */
+export type Mt5DataEvent =
+  | { kind: 'catalog'; catalog: Mt5Catalog | null }
+  | { kind: 'trading'; trading: Mt5Trading | null }
+  | { kind: 'ticks'; ticks: readonly Mt5Tick[] }
+  | { kind: 'bars'; bars: readonly Mt5Bar[] }
+  | { kind: 'trade-event'; event: Mt5TradeEvent }
+
 /** A new deal or finished order (`trade.event`); history covering it is out of date. */
 export interface Mt5TradeEvent {
   type: 'deal_add' | 'history_add'
@@ -501,3 +509,39 @@ export interface Mt5RendererBridge {
   acceptDisclaimer(): Promise<void>
   withdrawDisclaimer(): Promise<void>
 }
+
+/**
+ * A main-process MT5 runtime as the IPC layer sees it: the gateway client is the implementation;
+ * the legacy TLS bridge kept the same shape before it was retired.
+ */
+export interface Mt5RuntimeApi {
+  status(): Mt5Status
+  /** @returns the unsubscribe function. */
+  subscribe(listener: (status: Mt5Status) => void): () => void
+  /** @returns the unsubscribe function. */
+  subscribeData(listener: (event: Mt5DataEvent) => void): () => void
+  /** The catalogue of the trade server last synced; it outlives a disconnect. */
+  catalog(): Mt5Catalog | null
+  /** Positions and pending orders, once both are known for the terminal in use. */
+  trading(): Mt5Trading | null
+  /** The token the EA must prove; gateway mode has none of its own. */
+  token(): string
+  regenerateToken(): Promise<string>
+  /** Apply the preferences; the runtime reads what applies to it. */
+  configure(preferences: DesktopPreferencesMt5, options: { safeMode: boolean }): Promise<void>
+  resync(): Promise<void>
+  request(type: string, payload?: Record<string, unknown>): Promise<Record<string, unknown>>
+  /** Replace the page's quote and bar subscriptions. */
+  setSubscription(subscription: Mt5Subscription): void
+  historyBars(request: Mt5HistoryBarsRequest, options?: Mt5HistoryBarsOptions): Promise<Mt5HistoryBars>
+  /** Orders and deals with times in [from, to), Unix ms. */
+  historyTrades(range: { from: number; to: number }): Promise<Mt5TradeHistory>
+  /** Send a trade request once, never again; the trading gate is checked first. */
+  trade(input: Mt5TradeInput): Promise<Mt5TradeOutcome>
+  symbolInfo(symbol: string): Promise<Mt5SymbolInfo>
+  stop(): Promise<void>
+}
+
+/** The MT5 keys of the Desktop preferences the runtime is configured from. */
+export type DesktopPreferencesMt5 = Pick<import('../desktop-contract.ts').DesktopPreferences,
+  'mt5Enabled' | 'mt5DisclaimerVersion' | 'mt5DisclaimerAcceptedAt'>
