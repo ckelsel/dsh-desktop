@@ -17062,7 +17062,7 @@ __metadata:
     micromark-util-classify-character: "npm:^2.0.1"
     micromark-util-sanitize-uri: "npm:^2.0.1"
     micromark-util-symbol: "npm:^2.0.1"
-    mt5bridge: "file:../vendor/mt5bridge/mt5bridge-v0.1.0.tgz"
+    mt5bridge: "file:../vendor/mt5bridge/mt5bridge-v0.1.1.tgz"
     papaparse: "npm:^5.5.0"
     playwright: "npm:1.63.0"
     pnpm: "npm:11.28.5"
@@ -20944,10 +20944,10 @@ __metadata:
   languageName: node
   linkType: hard
 
-"mt5bridge@file:../vendor/mt5bridge/mt5bridge-v0.1.0.tgz::locator=dsh-desktop-next%40workspace%3Adsh-desktop-next":
-  version: 0.1.0
-  resolution: "mt5bridge@file:../vendor/mt5bridge/mt5bridge-v0.1.0.tgz#../vendor/mt5bridge/mt5bridge-v0.1.0.tgz::hash=54007e&locator=dsh-desktop-next%40workspace%3Adsh-desktop-next"
-  checksum: 10c0/cd34c3e94a672213d56baa662516c3fed5e2b27007a6466e2180819e2ae503f11cb0fdea7382d24d52f65a2c0b729597303b5251f213cbb3001d6e49ce0d8572
+"mt5bridge@file:../vendor/mt5bridge/mt5bridge-v0.1.1.tgz::locator=dsh-desktop-next%40workspace%3Adsh-desktop-next":
+  version: 0.1.1
+  resolution: "mt5bridge@file:../vendor/mt5bridge/mt5bridge-v0.1.1.tgz#../vendor/mt5bridge/mt5bridge-v0.1.1.tgz::hash=cc6586&locator=dsh-desktop-next%40workspace%3Adsh-desktop-next"
+  checksum: 10c0/645d0379712724570d7dfbc99362d3f4d00e954ee4cd99f68c930d9c399f3db482a7e0913040a29a999ddb1fe183f55868e87aeddb4cb32137f2a62cba89cc42
   languageName: node
   linkType: hard
 

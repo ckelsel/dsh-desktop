@@ -238,7 +238,7 @@
     "mdast-util-gfm": "^3.1.0",
     "mdast-util-to-string": "^4.0.0",
     "micromark-extension-gfm": "^3.0.0",
-    "mt5bridge": "file:../vendor/mt5bridge/mt5bridge-v0.1.0.tgz",
+    "mt5bridge": "file:../vendor/mt5bridge/mt5bridge-v0.1.1.tgz",
     "pnpm": "11.28.5",
     "react": "18.3.1",
     "selfsigned": "5.5.0",
