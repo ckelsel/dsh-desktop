@@ -19,16 +19,34 @@
  * the disconnect, so the page keeps its symbols while the quotes pause.
  */
 import type { DesktopPreferences } from '../desktop-contract.ts'
+import { randomUUID } from 'node:crypto'
 import { Mt5RequestError } from './bridge-server.ts'
 import {
   MT5_DISCLAIMER_VERSION, MT5_TIMEFRAMES,
-  type Mt5Account, type Mt5Bar, type Mt5BarData, type Mt5Catalog, type Mt5DataEvent, type Mt5HistoryBars, type Mt5HistoryBarsOptions,
-  type Mt5HistoryBarsRequest, type Mt5Order, type Mt5PendingType, type Mt5Position, type Mt5Status, type Mt5Subscription,
+  type Mt5Account, type Mt5Bar, type Mt5BarData, type Mt5Catalog, type Mt5DataEvent, type Mt5Deal, type Mt5HistoryBars, type Mt5HistoryBarsOptions,
+  type Mt5HistoryBarsRequest, type Mt5HistoryOrder, type Mt5Order, type Mt5PendingType, type Mt5Position, type Mt5Status, type Mt5Subscription,
   type Mt5Symbol, type Mt5SymbolInfo, type Mt5TerminalStatus, type Mt5Tick, type Mt5TradeHistory, type Mt5TradeInput,
   type Mt5TradeOutcome, type Mt5Trading,
 } from './contract.ts'
-import { MT5_GATEWAY_URL, Mt5GatewayLink, type GatewayTransportFactory } from './gateway-link.ts'
+import { MT5_GATEWAY_URL, Mt5GatewayLink, type GatewayEvent, type GatewayTerminal, type GatewayTransportFactory } from './gateway-link.ts'
 import { blockReasons, bridgePhase } from './terminal-state.ts'
+
+/**
+ * The wire the runtime rides: the gateway's SDK face (`Mt5GatewayLink`), or the mt5bridge SDK
+ * serving the terminal face in process (`Mt5SdkLink`). Both keep the same shape, so this layer
+ * and everything above it cannot tell them apart.
+ */
+export interface Mt5LinkPort {
+  /** The face's port, for the status the page shows. */
+  readonly port: number
+  open(): void
+  close(): void
+  snapshot(): readonly GatewayTerminal[]
+  onTerminals(listener: (terminals: readonly GatewayTerminal[]) => void): () => void
+  onEvent(listener: (event: GatewayEvent) => void): () => void
+  onConnection(listener: (up: boolean) => void): () => void
+  call(method: string, params?: Record<string, unknown>, options?: { timeoutMs?: number }): Promise<Record<string, unknown>>
+}
 
 export type Mt5LogLevel = 'debug' | 'info' | 'warn' | 'error'
 export type Mt5GatewayLog = (event: string, fields?: Record<string, string | number | boolean | null>, level?: Mt5LogLevel) => void
@@ -40,6 +58,11 @@ export interface Mt5GatewayRuntimeOptions {
   url?: string
   /** The transport to ride, for tests; the platform WebSocket by default. */
   transport?: GatewayTransportFactory
+  /**
+   * The link to ride instead of the gateway socket — the in-process SDK, whose terminal face the
+   * terminal's DLL dials directly. Given, `url` and `transport` do not apply.
+   */
+  link?: Mt5LinkPort
   /**
    * Which terminal to work with: the real one (default), or a strategy-tester agent — a 1:1
    * replay of which stands in for the market on a closed weekend.
@@ -100,12 +123,14 @@ async function mapLimited<T, R>(items: readonly T[], limit: number, task: (item:
 }
 
 export class Mt5GatewayRuntime {
-  private readonly link: Mt5GatewayLink
+  private readonly link: Mt5LinkPort
   private readonly now: () => number
   private readonly log: Mt5GatewayLog
   private readonly terminalKind: 'real' | 'tester'
   private readonly listeners = new Set<(status: Mt5Status) => void>()
   private readonly dataListeners = new Set<(event: Mt5DataEvent) => void>()
+  /** One trade at a time, as the bridge's journal keys one request to one outcome. */
+  private tradeInFlight = false
 
   private enabled = false
   private disclaimer: Mt5Status['disclaimer'] = null
@@ -148,7 +173,7 @@ export class Mt5GatewayRuntime {
     this.now = options.now ?? Date.now
     this.log = options.log
     this.terminalKind = options.terminal === 'tester' ? 'tester' : 'real'
-    this.link = new Mt5GatewayLink({ url: options.url ?? MT5_GATEWAY_URL, transport: options.transport, log: options.log, now: this.now })
+    this.link = options.link ?? new Mt5GatewayLink({ url: options.url ?? MT5_GATEWAY_URL, transport: options.transport, log: options.log, now: this.now })
     this.link.onConnection(up => { this.onConnection(up) })
     this.link.onTerminals(terminals => { this.onTerminals(terminals) })
     this.link.onEvent(event => { this.onEvent(event) })
@@ -247,13 +272,56 @@ export class Mt5GatewayRuntime {
     return { bars, noData: bars.length === 0 }
   }
 
-  /** Trading history arrives with trading, the next slice of this migration. */
-  historyTrades(): Promise<Mt5TradeHistory> {
-    return Promise.reject(new Mt5RequestError('not_available', 'Gateway mode: trade history arrives with trading support'))
+  /** Orders and deals of a time range, newest first. */
+  async historyTrades(range: { from: number; to: number }): Promise<Mt5TradeHistory> {
+    const window = { from_ms: range.from, to_ms: range.to }
+    const [orders, deals] = await Promise.all([
+      this.call('history.orders', window),
+      this.call('history.deals', window),
+    ])
+    return { orders: parseHistoryOrders(orders), deals: parseHistoryDeals(deals), truncated: false }
   }
 
-  trade(_input: Mt5TradeInput): Promise<Mt5TradeOutcome> {
-    return Promise.reject(new Mt5RequestError('not_available', 'Gateway mode: trading arrives in the next step'))
+  /** How long a trade request waits for its acceptance before the outcome is `unknown`. */
+  private static readonly TRADE_WAIT_MS = 20_000
+
+  /**
+   * Send a trade request once. The bridge takes it asynchronously (`trade.execute` answers
+   * acceptance, not the fill), so `placed` means MT5 took it and the outcome arrives as the trade
+   * events that follow; a timeout is `unknown`, never a cancellation, and the bridge's journal
+   * keys it by the idempotency key for reconciliation.
+   */
+  async trade(input: Mt5TradeInput): Promise<Mt5TradeOutcome> {
+    const blocked = this.build().blocked[0]
+    if (blocked !== undefined) return localOutcome('blocked', null, 'blocked', `Trading is blocked: ${blocked}`, blocked)
+    if (this.terminalId === null) return localOutcome('blocked', null, 'not_connected', 'No terminal is in use', 'ea-disconnected')
+    const account = this.account
+    if (account === null || account.login !== input.account.login || account.server !== input.account.server) {
+      return localOutcome('rejected', null, 'account_mismatch', 'The trade names another account than the one in use')
+    }
+    if (this.tradeInFlight) return localOutcome('rejected', null, 'busy', 'Another trade request is still waiting for the terminal')
+    this.tradeInFlight = true
+    const id = `dsh-${randomUUID()}`
+    this.log('mt5.trade-sent', { id, type: input.type, symbol: input.symbol })
+    let outcome: Mt5TradeOutcome
+    try {
+      const [method, body] = tradeBody(input)
+      const answer = await this.call(method, { ...body, idempotency_key: id }, Mt5GatewayRuntime.TRADE_WAIT_MS)
+      const retcode = asNumber(answer.retcode, 0)
+      const requestId = answer.request_id === undefined ? null : String(answer.request_id)
+      outcome = answer.status === 'accepted'
+        ? localOutcome(input.type === 'order.place' && input.orderType === 'market' ? 'placed' : 'done', requestId, 'sent', '', null, retcode)
+        : localOutcome('rejected', requestId, 'sent', `MT5 refused the request (retcode ${String(retcode)})`, null, retcode)
+    } catch (error) {
+      const code = error instanceof Mt5RequestError ? error.code : 'failed'
+      if (code === 'timeout') outcome = localOutcome('unknown', id, code, `The terminal did not answer within ${String(Mt5GatewayRuntime.TRADE_WAIT_MS / 1000)} s`)
+      else if (code === 'not_connected') outcome = localOutcome('unknown', id, code, 'The terminal connection dropped before it answered')
+      else outcome = localOutcome('rejected', id, code, errorText(error))
+    } finally {
+      this.tradeInFlight = false
+    }
+    this.log('mt5.trade-result', { id, status: outcome.status, retcode: outcome.retcode, code: outcome.code }, outcome.status === 'unknown' ? 'warn' : 'info')
+    return outcome
   }
 
   /** A symbol's trade rules, read from the terminal at every call. */
@@ -653,7 +721,7 @@ export class Mt5GatewayRuntime {
     })
     return {
       phase,
-      listen: this.enabled ? { host: '127.0.0.1', port: Number(new URL(MT5_GATEWAY_URL).port), addresses: ['127.0.0.1'] } : null,
+      listen: this.enabled ? { host: '127.0.0.1', port: this.link.port, addresses: ['127.0.0.1'] } : null,
       error: null,
       peer: this.terminalId === null ? null : { address: '127.0.0.1', port: 18860, eaVersion: 'gateway', connectedAt: this.syncedAt ?? 0 },
       terminal: this.terminalId === null ? null : this.terminal,
@@ -679,6 +747,90 @@ export class Mt5GatewayRuntime {
 // ── Wire to domain mappings ─────────────────────────────────────────────────
 
 const TRADE_MODES: Readonly<Record<number, Mt5SymbolInfo['tradeMode']>> = { 0: 'disabled', 1: 'long_only', 2: 'short_only', 3: 'close_only', 4: 'full' }
+
+/** A trade request the runtime answered without the terminal. */
+function localOutcome(status: Mt5TradeOutcome['status'], id: string | null, code: string, message: string, blocked: Mt5Status['blocked'][number] | null = null, retcode = 0): Mt5TradeOutcome {
+  return { status, id, blocked, retcode, code, message, order: null, deal: null, price: null, volume: null, duplicate: false }
+}
+
+/** A trade request as the bridge takes it: the method it rides and its parameters. */
+function tradeBody(input: Mt5TradeInput): [string, Record<string, unknown>] {
+  const stops = (sl: number | null, tp: number | null): Record<string, unknown> => ({
+    ...(sl === null ? {} : { sl }), ...(tp === null ? {} : { tp }),
+  })
+  switch (input.type) {
+    case 'order.place':
+      return ['trade.execute', {
+        action: input.orderType === 'market' ? input.side : `${input.side}_${input.orderType}`,
+        symbol: input.symbol, volume: input.volume,
+        ...(input.price === null ? {} : { price: input.price }),
+        ...stops(input.sl, input.tp),
+      }]
+    case 'position.close':
+      return ['position.close', { ticket: input.ticket, volume: input.volume }]
+    case 'position.modify':
+      return ['position.modify', { ticket: input.ticket, ...stops(input.sl, input.tp) }]
+    case 'order.modify':
+      return ['order.modify', { ticket: input.ticket, price: input.price, ...stops(input.sl, input.tp) }]
+    case 'order.cancel':
+      return ['order.cancel', { ticket: input.ticket }]
+  }
+}
+
+/** `history.orders` answer, newest first. */
+function parseHistoryOrders(answer: Record<string, unknown>): Mt5HistoryOrder[] {
+  const orders: Mt5HistoryOrder[] = []
+  for (const raw of Array.isArray(answer.orders) ? answer.orders : []) {
+    if (!isRecord(raw)) continue
+    orders.push({
+      ticket: String(asNumber(raw.ticket, 0)),
+      symbol: asString(raw.symbol),
+      type: asString(raw.type) as Mt5HistoryOrder['type'],
+      state: asString(raw.state),
+      volumeInitial: asNumber(raw.volume_initial, 0),
+      volumeCurrent: asNumber(raw.volume_current, 0),
+      price: asPositive(raw.price_open),
+      stopLimit: null,
+      sl: asPositive(raw.sl),
+      tp: asPositive(raw.tp),
+      timeSetup: asNumber(raw.time_setup_msc, 0),
+      timeDone: asNumber(raw.time_done_msc, 0),
+      position: null,
+      positionBy: null,
+      reason: '',
+      comment: asString(raw.comment),
+      magic: asNumber(raw.magic, 0),
+    })
+  }
+  return orders.sort((left, right) => right.timeSetup - left.timeSetup)
+}
+
+/** `history.deals` answer, newest first. */
+function parseHistoryDeals(answer: Record<string, unknown>): Mt5Deal[] {
+  const deals: Mt5Deal[] = []
+  for (const raw of Array.isArray(answer.deals) ? answer.deals : []) {
+    if (!isRecord(raw)) continue
+    deals.push({
+      ticket: String(asNumber(raw.ticket, 0)),
+      order: raw.order === undefined ? null : String(asNumber(raw.order, 0)),
+      position: null,
+      symbol: asString(raw.symbol),
+      type: asString(raw.type),
+      entry: asString(raw.direction) === 'out' ? 'out' : 'in',
+      volume: asNumber(raw.volume, 0),
+      price: asNumber(raw.price, 0),
+      commission: asNumber(raw.commission, 0),
+      swap: asNumber(raw.swap, 0),
+      fee: 0,
+      profit: asNumber(raw.profit, 0),
+      time: asNumber(raw.time_msc, 0),
+      reason: '',
+      comment: asString(raw.comment),
+      magic: asNumber(raw.magic, 0),
+    })
+  }
+  return deals.sort((left, right) => right.time - left.time)
+}
 
 /** `terminal.get` answer. */
 function parseTerminalStatus(answer: Record<string, unknown>): Mt5TerminalStatus {

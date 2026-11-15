@@ -285,7 +285,71 @@ describe('connection', () => {
   it('stays off while disabled, and answers gateway-mode gaps honestly', async () => {
     await runtime.configure({ mt5Enabled: false, mt5DisclaimerVersion: 0, mt5DisclaimerAcceptedAt: 0 }, { safeMode: false })
     expect(runtime.status()).toMatchObject({ phase: 'disabled', blocked: ['bridge-disabled'] })
-    await expect(runtime.trade({ type: 'order.cancel', account: { login: '1', server: 'x' }, symbol: 'EURUSD', ticket: '1' })).rejects.toThrow(/next step/u)
+    // Trading is refused by the gate without reaching a terminal.
+    const outcome = await runtime.trade({ type: 'order.cancel', account: { login: '1', server: 'x' }, symbol: 'EURUSD', ticket: '1' })
+    expect(outcome).toMatchObject({ status: 'blocked', blocked: 'bridge-disabled', code: 'blocked' })
     expect(runtime.token()).toContain('gateway')
+  })
+
+  it('sends a market order as trade.execute and answers placed', async () => {
+    await start()
+    gateway.handlers.set('trade.execute', () => ({ status: 'accepted', request_id: 3, retcode: 10009 }))
+    const outcome = await runtime.trade({
+      type: 'order.place', account: { login: '115496317', server: 'MetaQuotes-Demo' },
+      symbol: 'EURUSD', side: 'buy', orderType: 'market', volume: 0.01, price: null, sl: null, tp: null,
+    })
+    expect(outcome).toMatchObject({ status: 'placed', id: '3', retcode: 10009, code: 'sent' })
+    const sent = gateway.calls('trade.execute')[0]!
+    expect(sent).toMatchObject({ action: 'buy', symbol: 'EURUSD', volume: 0.01 })
+    expect(sent.sl).toBeUndefined()
+    expect(typeof sent.idempotency_key).toBe('string')
+  })
+
+  it('maps a pending order to its action, and reports the terminal refusal with its retcode', async () => {
+    await start()
+    gateway.handlers.set('trade.execute', () => ({ status: 'rejected', request_id: 4, retcode: 10015 }))
+    const outcome = await runtime.trade({
+      type: 'order.place', account: { login: '115496317', server: 'MetaQuotes-Demo' },
+      symbol: 'XAUUSD', side: 'sell', orderType: 'limit', volume: 0.1, price: 2650.5, sl: null, tp: 2600,
+    })
+    expect(outcome).toMatchObject({ status: 'rejected', id: '4', retcode: 10015, code: 'sent' })
+    expect(gateway.calls('trade.execute')[0]).toMatchObject({ action: 'sell_limit', price: 2650.5, tp: 2600 })
+  })
+
+  it('refuses a trade for another account without sending it', async () => {
+    await start()
+    const outcome = await runtime.trade({
+      type: 'position.close', account: { login: '999', server: 'Elsewhere' }, symbol: 'EURUSD', ticket: '123456', volume: 0.02,
+    })
+    expect(outcome).toMatchObject({ status: 'rejected', code: 'account_mismatch', id: null })
+    expect(gateway.calls('position.close').length).toBe(0)
+  })
+
+  it('closes a position through its own channel with the ticket', async () => {
+    await start()
+    gateway.handlers.set('position.close', () => ({ status: 'accepted', request_id: 5, retcode: 10009 }))
+    const outcome = await runtime.trade({
+      type: 'position.close', account: { login: '115496317', server: 'MetaQuotes-Demo' }, symbol: 'EURUSD', ticket: '123456', volume: 0.02,
+    })
+    expect(outcome).toMatchObject({ status: 'done', id: '5' })
+    expect(gateway.calls('position.close')[0]).toMatchObject({ ticket: '123456', volume: 0.02 })
+  })
+
+  it('answers trade history newest first, orders and deals together', async () => {
+    await start()
+    gateway.handlers.set('history.orders', () => ({ orders: [
+      { ticket: 2, symbol: 'EURUSD', type: 'buy_limit', state: 'ORDER_STATE_FILLED', volume_current: 0.01, volume_initial: 0.01, price_open: 1.08, time_setup_msc: 2000, time_done_msc: 2100, comment: 'dsh-1' },
+      { ticket: 1, symbol: 'XAUUSD', type: 'sell', state: 'ORDER_STATE_FILLED', volume_current: 0.1, volume_initial: 0.1, price_open: 2650, time_setup_msc: 1000, time_done_msc: 1100, comment: '' },
+    ] }))
+    gateway.handlers.set('history.deals', () => ({ deals: [
+      { ticket: 21, order: 2, symbol: 'EURUSD', type: 'buy', direction: 'in', volume: 0.01, price: 1.0812, profit: 0, commission: 0, swap: 0, time_msc: 2100, comment: 'dsh-1' },
+      { ticket: 11, order: 1, symbol: 'XAUUSD', type: 'sell', direction: 'out', volume: 0.1, price: 2649.5, profit: 5, commission: -0.1, swap: 0, time_msc: 1100, comment: '' },
+    ] }))
+    const history = await runtime.historyTrades({ from: 0, to: 10_000 })
+    expect(history.orders.map(order => order.ticket)).toEqual(['2', '1'])
+    expect(history.orders[0]).toMatchObject({ state: 'ORDER_STATE_FILLED', price: 1.08, timeSetup: 2000, comment: 'dsh-1' })
+    expect(history.deals.map(deal => deal.ticket)).toEqual(['21', '11'])
+    expect(history.deals[1]).toMatchObject({ entry: 'out', profit: 5, time: 1100 })
+    expect(history.truncated).toBe(false)
   })
 })

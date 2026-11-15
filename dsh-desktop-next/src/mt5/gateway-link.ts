@@ -132,6 +132,11 @@ export class Mt5GatewayLink {
     return this.up
   }
 
+  /** The SDK face port of the configured URL, for the status the page shows. */
+  get port(): number {
+    return Number(new URL(this.options.url).port)
+  }
+
   /** The terminals of the last hello, adjusted by later `event.terminal`. */
   snapshot(): readonly GatewayTerminal[] {
     return [...this.terminals.values()]

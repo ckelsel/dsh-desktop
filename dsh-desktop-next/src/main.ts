@@ -63,6 +63,7 @@ import { pickOutsideProgramDirectory, programDirectory, programDirectoryRefusal,
 import { startCrashReporting } from './crash-reporting.ts'
 import { MT5_DISCLAIMER_VERSION } from './mt5/contract.ts'
 import { Mt5GatewayRuntime } from './mt5/gateway-runtime.ts'
+import { Mt5SdkLink } from './mt5/sdk-link.ts'
 import { installMt5Ipc } from './mt5/mt5-ipc.ts'
 
 // Below Medium integrity Chromium cannot start its GPU process and ends the launch without a word (#1564).
@@ -245,10 +246,14 @@ const runtime = new NextDesktopRuntime({
   },
 })
 if (ownsInstance) runtime.diagnostics.crashDumps = crashDumps
-/** The MT5 bridge: an SDK of the local MT5Bridge gateway, where the terminal's DLL has dialed in. */
-const mt5 = new Mt5GatewayRuntime({
-  log: (event, fields, level = 'info') => { runtime.diagnostics.record({ source: 'mt5', event, level, ...(fields === undefined ? {} : { fields }) }) },
-})
+/**
+ * The MT5 bridge: the mt5bridge SDK serves the terminal face in process, and the terminal's DLL
+ * dials the Desktop directly on 18850 — the single-host rule of the deployment.
+ */
+const mt5Log = (event: string, fields?: Record<string, string | number | boolean | null>, level: 'debug' | 'info' | 'warn' | 'error' = 'info'): void => {
+  runtime.diagnostics.record({ source: 'mt5', event, level, ...(fields === undefined ? {} : { fields }) })
+}
+const mt5 = new Mt5GatewayRuntime({ link: new Mt5SdkLink({ log: mt5Log }), log: mt5Log })
 const platformLogin = new PlatformLoginWindow({
   BrowserWindow, session: partition => session.fromPartition(partition), host: () => runtime.auth,
   parent: () => mainWindow, title: () => t('登录 DeepSeek', 'Sign in to DeepSeek'), dark: () => nativeTheme.shouldUseDarkColors,
