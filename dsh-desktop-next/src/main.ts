@@ -253,7 +253,9 @@ if (ownsInstance) runtime.diagnostics.crashDumps = crashDumps
 const mt5Log = (event: string, fields?: Record<string, string | number | boolean | null>, level: 'debug' | 'info' | 'warn' | 'error' = 'info'): void => {
   runtime.diagnostics.record({ source: 'mt5', event, level, ...(fields === undefined ? {} : { fields }) })
 }
-const mt5 = new Mt5GatewayRuntime({ link: new Mt5SdkLink({ log: mt5Log }), log: mt5Log })
+// MT5_TERMINAL=tester works the bridge against a strategy-tester replay agent instead of the real
+// terminal — the weekend stand-in market; unset (or any other value) keeps the default real one.
+const mt5 = new Mt5GatewayRuntime({ terminal: process.env.MT5_TERMINAL === 'tester' ? 'tester' : undefined, link: new Mt5SdkLink({ log: mt5Log }), log: mt5Log })
 const platformLogin = new PlatformLoginWindow({
   BrowserWindow, session: partition => session.fromPartition(partition), host: () => runtime.auth,
   parent: () => mainWindow, title: () => t('登录 DeepSeek', 'Sign in to DeepSeek'), dark: () => nativeTheme.shouldUseDarkColors,
