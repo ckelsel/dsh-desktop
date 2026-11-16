@@ -11,7 +11,7 @@ import { useClipboardCopy } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { DesktopPreferences, DesktopState } from '../desktop-contract.ts'
 import type { Mt5RejectReason, Mt5RendererBridge, Mt5Status } from '../mt5/contract.ts'
 import { DesktopSettingsToggleRow } from './DesktopSettingsSection.tsx'
-import { desktopMt5Bridge } from './market/data/mt5-bridge.ts'
+import { desktopMt5Bridge } from './desktop-mt5-bridge.ts'
 import { Mt5Disclaimer } from './mt5-disclaimer.tsx'
 
 export type Mt5PreferencePatch = Partial<Pick<DesktopPreferences, 'mt5Enabled' | 'mt5Exposure' | 'mt5Port'>>

@@ -22,8 +22,6 @@ import { desktopDirectoryPicker, registerDesktopDirectoryPicker } from './direct
 import { SettingsRequests } from './settings-requests.tsx'
 import type { DesktopSettingsLocaleKey } from '../../../dsh-plugin-desktop/src/client/desktop-settings-locales.ts'
 import { installRendererRecovery } from './renderer-recovery.ts'
-import { applyTradingShell } from './trading-shell/index.ts'
-import { registerMarketPage } from './market/index.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
@@ -32,15 +30,11 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   }
 }
 
-// `layout` is not a top-level dependency: under the trading layout this plugin provides it.
+// The market page left with its own plugin (mt5-bridge-panel): it registers the official global
+// panel and its sidebar entry itself, so this bundle ships no trading layout and no market page.
 export const inject = ['slots', 'locale']
 
 export function apply(ctx: Context): void {
-  // The Host composed this document's layout; the boot carrier reports which one.
-  if (window.desktopNext?.renderer?.layout?.() === 'trading') {
-    applyTradingShell(ctx)
-    registerMarketPage(ctx)
-  }
   ctx.effect(installUiDiagnostics, 'AA and Plugins client lifecycle diagnostics')
   ctx.effect(() => ctx.locale.register('desktop-next', {
     zh: { settings: '桌面设置', language: 'zh', safeMode: '安全模式', safeModeDetail: '当前使用临时环境。退出安全模式并重启后返回原 Profile，临时数据不会保留。', dismiss: '关闭提示', recovery: '打开恢复助手' },

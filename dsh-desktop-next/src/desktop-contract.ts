@@ -62,7 +62,7 @@ export const DEFAULT_PREFERENCES: Readonly<DesktopPreferences> = Object.freeze({
   closeToTray: true, macosMaterial: 'transparent', windowsMaterial: 'off', linuxMaterial: 'off',
   browserAccess: false, networkExposure: 'loopback', port: 0, lanPort: 0, logLevel: 'info', developerLogging: false,
   sidebarFooterCompat: true, sidebarFooterBalanced: true, notifications: true, turnCompleted: true, turnFailed: true, jobCompleted: false, jobFailed: false,
-  scheduleCompleted: true, scheduleFailed: true, layoutMode: 'trading',
+  scheduleCompleted: true, scheduleFailed: true, layoutMode: 'compatibility',
   mt5Enabled: true, mt5Exposure: 'loopback', mt5Port: MT5_DEFAULT_PORT,
   mt5DisclaimerVersion: 0, mt5DisclaimerAcceptedAt: 0,
 })

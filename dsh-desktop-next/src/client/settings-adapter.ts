@@ -89,9 +89,7 @@ export class NextSettingsAdapter {
         && (!this.current.preferences.browserAccess || this.current.preferences.networkExposure !== 'lan')
       const requiresPortConfirm = (patch.port !== undefined && patch.port !== this.current.preferences.port)
         || (patch.lanPort !== undefined && patch.lanPort !== this.current.preferences.lanPort)
-      // A layout change waits for the restart confirmation; a refusal keeps the running layout.
-      const requiresLayoutConfirm = patch.layoutMode !== undefined && patch.layoutMode !== this.current.preferences.layoutMode
-      if (!requiresLanConfirm && !requiresPortConfirm && !requiresLayoutConfirm) {
+      if (!requiresLanConfirm && !requiresPortConfirm) {
         const preferences = { ...this.current.preferences, ...patch }
         if (!preferences.browserAccess) preferences.networkExposure = 'loopback'
         this.applyState({ ...this.current, preferences })
