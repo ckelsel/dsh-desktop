@@ -701,11 +701,22 @@ export class Mt5GatewayRuntime {
     if (this.terminalId === null) return
     const generation = this.generation
     try {
+      // The gate (blocked) lives on terminal/account facts the events themselves don't carry.
+      // The bridge's service may start before the broker login lands, so the first sync can
+      // read "disconnected" that later events never correct — re-read both here, and a
+      // terminal that connects afterwards unblocks without a manual resync.
+      const terminal = parseTerminalStatus(await this.call('terminal.get'))
+      if (generation !== this.generation) return
+      this.terminal = terminal
+      const account = parseAccount(await this.call('account.get'))
+      if (generation !== this.generation) return
+      this.account = account
       this.positions = parsePositions(await this.call('position.list'))
       if (generation !== this.generation) return
       this.orders = parseOrders(await this.call('order.list'))
       if (generation !== this.generation) return
       this.tradingChanged()
+      this.publish()
     } catch (error) {
       this.log('mt5.gateway-refold-failed', { detail: errorText(error) }, 'warn')
     }
