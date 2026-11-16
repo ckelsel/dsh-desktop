@@ -102,6 +102,11 @@ const delay = (ms: number): Promise<void> => new Promise(resolve => { setTimeout
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)
 const asString = (value: unknown): string => typeof value === 'string' ? value : ''
 const asNumber = (value: unknown, fallback: number): number => typeof value === 'number' && Number.isFinite(value) ? value : fallback
+/** Tickets and order ids travel as decimal strings (ulong range); integers accepted, as in protocol.ts's id(). */
+const asTicketId = (value: unknown): string =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? String(value)
+    : typeof value === 'string' && /^\d{1,20}$/u.test(value) ? value
+      : '0'
 const asPositive = (value: unknown): number | null => typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null
 
 /** The chart key of a subscription stream, as the bridge's subscription table knows it. */
@@ -783,7 +788,7 @@ function parseHistoryOrders(answer: Record<string, unknown>): Mt5HistoryOrder[] 
   for (const raw of Array.isArray(answer.orders) ? answer.orders : []) {
     if (!isRecord(raw)) continue
     orders.push({
-      ticket: String(asNumber(raw.ticket, 0)),
+      ticket: asTicketId(raw.ticket),
       symbol: asString(raw.symbol),
       type: asString(raw.type) as Mt5HistoryOrder['type'],
       state: asString(raw.state),
@@ -811,8 +816,8 @@ function parseHistoryDeals(answer: Record<string, unknown>): Mt5Deal[] {
   for (const raw of Array.isArray(answer.deals) ? answer.deals : []) {
     if (!isRecord(raw)) continue
     deals.push({
-      ticket: String(asNumber(raw.ticket, 0)),
-      order: raw.order === undefined ? null : String(asNumber(raw.order, 0)),
+      ticket: asTicketId(raw.ticket),
+      order: raw.order === undefined ? null : asTicketId(raw.order),
       position: null,
       symbol: asString(raw.symbol),
       type: asString(raw.type),
@@ -915,7 +920,7 @@ function parsePositions(answer: Record<string, unknown>): Mt5Position[] {
   for (const raw of Array.isArray(answer.positions) ? answer.positions : []) {
     if (!isRecord(raw)) continue
     positions.push({
-      ticket: String(asNumber(raw.ticket, 0)),
+      ticket: asTicketId(raw.ticket),
       symbol: asString(raw.symbol),
       side: asString(raw.type) === 'sell' ? 'sell' : 'buy',
       volume: asNumber(raw.volume, 0),
@@ -939,7 +944,7 @@ function parseOrders(answer: Record<string, unknown>): Mt5Order[] {
   for (const raw of Array.isArray(answer.orders) ? answer.orders : []) {
     if (!isRecord(raw)) continue
     orders.push({
-      ticket: String(asNumber(raw.ticket, 0)),
+      ticket: asTicketId(raw.ticket),
       symbol: asString(raw.symbol),
       type: asString(raw.type) as Mt5PendingType,
       state: asString(raw.state),
