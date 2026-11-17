@@ -167,6 +167,7 @@ export class Mt5GatewayRuntime {
   private subscription: Mt5Subscription = { quotes: [], bars: [] }
   private readonly active = new Map<string, { symbol: string; period: string }>()
   private sentSubscription: string | null = null
+  private sentWatch: string | null = null
   private flushTimer: NodeJS.Timeout | undefined
   /** One flush runs at a time; changes that arrive meanwhile run again after it. */
   private flushing = false
@@ -467,6 +468,7 @@ export class Mt5GatewayRuntime {
     this.orders = null
     this.lastSeq = null
     this.sentSubscription = null
+    this.sentWatch = null
     this.active.clear()
     this.log('mt5.gateway-terminal-lost', { reason })
     if (hadTrading) this.emitData({ kind: 'trading', trading: null })
@@ -500,6 +502,7 @@ export class Mt5GatewayRuntime {
       if (!current()) return
       // A fresh terminal session holds no charts; ready first, so the flush replays whole.
       this.sentSubscription = null
+      this.sentWatch = null
       this.active.clear()
       this.ready = true
       await this.flushSubscription()
@@ -558,10 +561,9 @@ export class Mt5GatewayRuntime {
 
   // ── Subscriptions ─────────────────────────────────────────────────────────
 
-  /** The chart keys the page's subscriptions need: quote symbols ride an M1 chart each. */
+  /** The chart keys the page's bar subscriptions need: quotes ride the service's watch list, not charts. */
   private wanted(): Map<string, { symbol: string; period: string }> {
     const streams = new Map<string, { symbol: string; period: string }>()
-    for (const symbol of this.subscription.quotes) streams.set(streamKey(symbol, 'M1'), { symbol, period: 'M1' })
     for (const stream of this.subscription.bars) {
       const key = streamKey(stream.symbol, stream.timeframe)
       streams.set(key, { symbol: stream.symbol, period: stream.timeframe })
@@ -592,7 +594,7 @@ export class Mt5GatewayRuntime {
 
   private async flushNow(): Promise<void> {
     const wanted = this.wanted()
-    const symbols = [...new Set([...wanted.values()].map(stream => stream.symbol))]
+    const symbols = [...new Set([...this.subscription.bars.map(stream => stream.symbol), ...this.subscription.quotes])]
     // While no terminal is in use the details can still be read; charts wait for a synced one,
     // for a mid-sync flush would double-subscribe against the sync's own replay.
     if (this.terminalId === null || !this.ready) {
@@ -602,6 +604,16 @@ export class Mt5GatewayRuntime {
     const text = JSON.stringify(this.subscription)
     if (text === this.sentSubscription) return
     this.sentSubscription = text
+    // The quote watch list is the service's to poll (no chart per symbol): one call replaces the
+    // whole set, and the first pass after it seeds every symbol at once.
+    const watch = JSON.stringify(this.subscription.quotes)
+    if (watch !== this.sentWatch) {
+      this.sentWatch = watch
+      this.link.call('market.watch', { symbols: this.subscription.quotes, terminal_id: this.terminalId }).catch((error: unknown) => {
+        if (this.sentWatch === watch) this.sentWatch = null
+        this.log('mt5.gateway-watch-failed', { detail: errorText(error) }, 'warn')
+      })
+    }
     await this.hydrate(symbols)
     const removals: Promise<unknown>[] = []
     for (const [key, stream] of [...this.active.entries()]) {
