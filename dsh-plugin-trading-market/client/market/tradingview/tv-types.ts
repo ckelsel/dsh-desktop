@@ -113,6 +113,41 @@ export interface TvChart {
   getStudyById(id: string): TvStudy
   /** Request the bars again, after the datafeed reset their cache. */
   resetData(): void
+  /** Place a drawing on the chart; a horizontal line needs only its price. */
+  createShape(point: TvShapePoint, options: TvCreateShapeOptions): Promise<TvEntityId>
+  /** The drawing an id names; ids come from `createShape`. */
+  getShapeById(id: TvEntityId): TvLineDataSource
+  removeEntity(id: TvEntityId): void
+}
+
+/** A drawing's anchor: a horizontal line carries only its price. */
+export interface TvShapePoint {
+  time?: number
+  price?: number
+}
+
+/** `EntityId`: an opaque string naming a chart drawing or study. */
+export type TvEntityId = string
+
+/** `CreateShapeOptions`, the members a trade line sets. */
+export interface TvCreateShapeOptions {
+  shape: 'horizontal_line'
+  text?: string
+  /** A locked drawing holds still instead of being dragged. */
+  lock?: boolean
+  disableSelection?: boolean
+  disableSave?: boolean
+  disableUndo?: boolean
+  overrides?: TvOverrides
+}
+
+/** `ILineDataSourceApi`, the members the trade lines use. */
+export interface TvLineDataSource {
+  getPoints(): TvShapePoint[]
+  setPoints(points: TvShapePoint[]): void
+  getProperties(): Record<string, unknown>
+  setProperties(properties: Record<string, unknown>): void
+  setSavingEnabled(enable: boolean): void
 }
 
 export type TvOverrides = Record<string, string | number | boolean>

@@ -11,7 +11,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { CSSProperties, ReactNode } from 'react'
 import { List, PanelBottom, Ticket, X } from 'lucide-react'
 import { Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { Mt5Status } from '../../mt5/contract.ts'
+import type { Mt5Status } from '../contract.ts'
 import { Mt5Disclaimer } from '../mt5-disclaimer.tsx'
 import { conversionTickers } from './data/trading.ts'
 import { datafeedLabels } from './labels.ts'
@@ -70,6 +70,8 @@ export function MarketPage(props: MarketPageProps) {
   const language = useLanguage(value => value)
   const accountCurrency = useAccount(state => state.account?.currency ?? 'USD')
   const mt5Status = useAccount(state => state.connection.mt5)
+  const positions = useAccount(state => state.positions)
+  const orders = useAccount(state => state.orders)
   const ready = source.state === 'ready' && current === source.key
 
   // A source with symbols becomes the store's, before the chart and lists show it; a catalogue
@@ -127,6 +129,8 @@ export function MarketPage(props: MarketPageProps) {
   const chartText = useMemo(() => ({
     loading: t('chart.loading'), missing: t('chart.missing'), missingDetail: t('chart.missingDetail'), retry: t('chart.retry'),
   }), [t])
+  // The chart draws the account's own lines: positions, their exits, and pending orders.
+  const chartLines = useMemo(() => ({ positions, orders, trading, market, t, notify }), [positions, orders, trading, market, t, notify])
 
   const side = panel === null ? null : !ready ? <Waiting t={t} status={mt5Status} compact /> : panel === 'watchlist'
     ? <Watchlist key={source.key} t={t} market={market} live={source.live} useQuotes={useQuotes} useStore={useStore} actions={actions} accountCurrency={accountCurrency} />
@@ -149,6 +153,7 @@ export function MarketPage(props: MarketPageProps) {
           text={chartText}
           onSymbol={actions.setSymbol}
           onResolution={actions.setResolution}
+          tradeLines={chartLines}
         />}
         <div className="dshMkNotices" role="status" aria-live="polite">
           {notices.map(notice => <div key={notice.id} className="dshMkNotice" data-tone={notice.tone}>

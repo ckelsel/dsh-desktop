@@ -1,6 +1,6 @@
 /** Localized names shared by the market page panels and the chart datafeed. */
 import { ASSET_CLASSES, type MarketSymbol } from './data/market-data.ts'
-import type { Mt5RejectReason } from '../../mt5/contract.ts'
+import type { Mt5RejectReason } from '../contract.ts'
 import type { Deal, DealEntry, HistoryOrderType, PendingType, Side, TradeBlock, TradeResult } from './data/trading.ts'
 import type { DatafeedLabels } from './tradingview/datafeed.ts'
 import { zh } from './locales.ts'

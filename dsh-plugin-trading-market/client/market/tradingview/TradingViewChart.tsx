@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { MarketDataProvider } from '../data/market-data.ts'
 import { createDatafeed, normalizeResolution, tickerOf, type DatafeedLabels } from './datafeed.ts'
 import { LIBRARY_PATH, loadTradingView } from './loader.ts'
+import { installTradeLines, type TradeLinesHandle, type TradeLinesProps } from './trade-lines.ts'
 import type { TvChart, TvOverrides, TvWidget } from './tv-types.ts'
 
 export type ColorScheme = 'light' | 'dark'
@@ -138,17 +139,20 @@ export interface TradingViewChartProps {
   onResolution(resolution: string): void
   /** Receives the chart once it is ready, and null when it goes away. */
   onChart?(chart: TvChart | null): void
+  /** Account lines to draw on the chart: positions, their exits, and pending orders. */
+  tradeLines?: TradeLinesProps
 }
 
 interface Mounted {
   widget: TvWidget
   ready: boolean
   theme: ColorScheme
+  tradeLines: TradeLinesHandle | null
 }
 
 /** The chart area (see module doc). */
 export function TradingViewChart(props: TradingViewChartProps) {
-  const { symbol, resolution, scheme, upColor, language, text } = props
+  const { symbol, resolution, scheme, upColor, language, text, tradeLines } = props
   const hostRef = useRef<HTMLDivElement | null>(null)
   const containerRef = useRef<HTMLDivElement | null>(null)
   const mounted = useRef<Mounted | null>(null)
@@ -191,13 +195,17 @@ export function TradingViewChart(props: TradingViewChartProps) {
         studies_overrides: volumeOverrides(initial.upColor),
         favorites: { intervals: ['1', '5', '15', '60', '240', '1D'] },
       })
-      const entry: Mounted = { widget, ready: false, theme: initial.scheme }
+      const entry: Mounted = { widget, ready: false, theme: initial.scheme, tradeLines: null }
       mounted.current = entry
       const save = (): void => { widget.save((state) => { writeSaved(storageKey, state) }) }
       widget.subscribe('onAutoSaveNeeded', save)
       const onSymbolChanged = (): void => {
         const ticker = tickerOf(widget.activeChart().symbol())
         if (latest.current.market.symbol(ticker) !== undefined) latest.current.onSymbol(ticker)
+        // Lines belong to the symbol just left: re-sync drops them, and the next update draws the new symbol's.
+        const lines = mounted.current?.tradeLines
+        const props = latest.current.tradeLines
+        if (lines != null && props !== undefined) lines.update(props.positions, props.orders)
       }
       const onIntervalChanged = (interval: string): void => { latest.current.onResolution(normalizeResolution(interval)) }
       widget.onChartReady(() => {
@@ -207,6 +215,11 @@ export function TradingViewChart(props: TradingViewChartProps) {
         chart.onIntervalChanged().subscribe(null, onIntervalChanged)
         // Saved chart properties carry the colours of when they were saved.
         applyPriceColors(widget, latest.current.upColor)
+        const initialLines = latest.current.tradeLines
+        if (initialLines !== undefined) {
+          entry.tradeLines = installTradeLines({ chart, ...initialLines })
+          entry.tradeLines.update(initialLines.positions, initialLines.orders)
+        }
         entry.ready = true
         setStatus('ready')
         latest.current.onChart?.(chart)
@@ -214,6 +227,7 @@ export function TradingViewChart(props: TradingViewChartProps) {
       cleanup = () => {
         mounted.current = null
         if (entry.ready) latest.current.onChart?.(null)
+        entry.tradeLines?.dispose()
         // On unmount React runs this after removing the container. The chart frame's window went
         // with it, taking these subscriptions along, and the library would throw reaching into it.
         if (container.isConnected) {
@@ -250,6 +264,14 @@ export function TradingViewChart(props: TradingViewChartProps) {
     const chart = entry.widget.activeChart()
     if (normalizeResolution(chart.resolution()) !== resolution) void chart.setResolution(resolution)
   }, [status, resolution])
+
+  // The account lines follow the snapshot while the chart is up.
+  useEffect(() => {
+    const entry = mounted.current
+    if (status !== 'ready' || entry === null || entry.tradeLines === null) return
+    const props = latest.current.tradeLines
+    if (props !== undefined) entry.tradeLines.update(props.positions, props.orders)
+  }, [status, tradeLines?.positions, tradeLines?.orders])
 
   // Theme switches reset chart colours, so colours are applied after the theme settles.
   useEffect(() => {
