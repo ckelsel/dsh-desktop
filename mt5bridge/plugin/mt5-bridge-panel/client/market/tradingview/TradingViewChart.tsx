@@ -117,6 +117,15 @@ function readSaved(key: string): object | undefined {
   }
 }
 
+function dropSaved(key: string): void {
+  try { window.localStorage.removeItem(key) } catch {
+    // Full or blocked storage: the rebuild below still skips the saved state.
+  }
+}
+
+/** A saved state the library cannot restore wedges the widget silently; after this long, drop it and rebuild. */
+const READY_WATCHDOG_MS = 10_000
+
 function writeSaved(key: string, state: object): void {
   try { window.localStorage.setItem(key, JSON.stringify(state)) } catch {
     // Full or blocked storage only loses the saved chart layout.
@@ -168,6 +177,7 @@ export function TradingViewChart(props: TradingViewChartProps) {
       if (disposed) return
       const initial = latest.current
       const storageKey = initial.storageKey
+      const saved = readSaved(storageKey)
       // The datafeed dropped stale bars: load the visible range again.
       const reload = (): void => { if (!disposed && entry.ready) widget.activeChart().resetData() }
       const datafeed = createDatafeed(initial.market, initial.labels, () => { reload() })
@@ -185,7 +195,7 @@ export function TradingViewChart(props: TradingViewChartProps) {
         // storage server backs the save/load menu.
         disabled_features: ['header_fullscreen_button', 'header_saveload', 'popup_hints'],
         enabled_features: ['iframe_loading_same_origin'],
-        saved_data: readSaved(storageKey),
+        saved_data: saved,
         auto_save_delay: 2,
         overrides: priceOverrides(initial.upColor),
         studies_overrides: volumeOverrides(initial.upColor),
@@ -193,6 +203,13 @@ export function TradingViewChart(props: TradingViewChartProps) {
       })
       const entry: Mounted = { widget, ready: false, theme: initial.scheme }
       mounted.current = entry
+      // A saved state the library cannot restore never becomes ready and reports nothing; after the
+      // grace period, drop that state and rebuild the widget without it.
+      const watchdog = saved === undefined ? undefined : setTimeout(() => {
+        if (disposed || entry.ready) return
+        dropSaved(storageKey)
+        setAttempt(value => value + 1)
+      }, READY_WATCHDOG_MS)
       const save = (): void => { widget.save((state) => { writeSaved(storageKey, state) }) }
       widget.subscribe('onAutoSaveNeeded', save)
       const onSymbolChanged = (): void => {
@@ -202,6 +219,7 @@ export function TradingViewChart(props: TradingViewChartProps) {
       const onIntervalChanged = (interval: string): void => { latest.current.onResolution(normalizeResolution(interval)) }
       widget.onChartReady(() => {
         if (disposed) return
+        if (watchdog !== undefined) clearTimeout(watchdog)
         const chart = widget.activeChart()
         chart.onSymbolChanged().subscribe(null, onSymbolChanged)
         chart.onIntervalChanged().subscribe(null, onIntervalChanged)
@@ -212,6 +230,7 @@ export function TradingViewChart(props: TradingViewChartProps) {
         latest.current.onChart?.(chart)
       })
       cleanup = () => {
+        if (watchdog !== undefined) clearTimeout(watchdog)
         mounted.current = null
         if (entry.ready) latest.current.onChart?.(null)
         // On unmount React runs this after removing the container. The chart frame's window went

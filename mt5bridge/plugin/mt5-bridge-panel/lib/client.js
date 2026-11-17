@@ -40396,6 +40396,13 @@ function readSaved(key) {
 		return;
 	}
 }
+function dropSaved(key) {
+	try {
+		window.localStorage.removeItem(key);
+	} catch {}
+}
+/** A saved state the library cannot restore wedges the widget silently; after this long, drop it and rebuild. */
+const READY_WATCHDOG_MS = 1e4;
 function writeSaved(key, state) {
 	try {
 		window.localStorage.setItem(key, JSON.stringify(state));
@@ -40422,6 +40429,7 @@ function TradingViewChart(props) {
 			if (disposed) return;
 			const initial = latest.current;
 			const storageKey = initial.storageKey;
+			const saved = readSaved(storageKey);
 			const reload = () => {
 				if (!disposed && entry.ready) widget.activeChart().resetData();
 			};
@@ -40444,7 +40452,7 @@ function TradingViewChart(props) {
 					"popup_hints"
 				],
 				enabled_features: ["iframe_loading_same_origin"],
-				saved_data: readSaved(storageKey),
+				saved_data: saved,
 				auto_save_delay: 2,
 				overrides: priceOverrides(initial.upColor),
 				studies_overrides: volumeOverrides(initial.upColor),
@@ -40463,6 +40471,11 @@ function TradingViewChart(props) {
 				theme: initial.scheme
 			};
 			mounted.current = entry;
+			const watchdog = saved === void 0 ? void 0 : setTimeout(() => {
+				if (disposed || entry.ready) return;
+				dropSaved(storageKey);
+				setAttempt((value) => value + 1);
+			}, READY_WATCHDOG_MS);
 			const save = () => {
 				widget.save((state) => {
 					writeSaved(storageKey, state);
@@ -40478,6 +40491,7 @@ function TradingViewChart(props) {
 			};
 			widget.onChartReady(() => {
 				if (disposed) return;
+				if (watchdog !== void 0) clearTimeout(watchdog);
 				const chart = widget.activeChart();
 				chart.onSymbolChanged().subscribe(null, onSymbolChanged);
 				chart.onIntervalChanged().subscribe(null, onIntervalChanged);
@@ -40487,6 +40501,7 @@ function TradingViewChart(props) {
 				latest.current.onChart?.(chart);
 			});
 			cleanup = () => {
+				if (watchdog !== void 0) clearTimeout(watchdog);
 				mounted.current = null;
 				if (entry.ready) latest.current.onChart?.(null);
 				if (container.isConnected) {
