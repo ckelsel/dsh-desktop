@@ -1,0 +1,6 @@
+# dsh-plugin-trading-market's own profile layer: inserts the plugin entry into the loader tree.
+# The dsh.bundle.patch field of package.json points here; the plugin manager applies it
+# as a bundle layer after install.
+- insert:
+    - id: dsh-plugin-trading-market
+      name: dsh-plugin-trading-market
