@@ -261,7 +261,9 @@ export class Mt5GatewayRuntime {
         answer = await this.call('market.bars', { symbol: request.symbol, period: request.timeframe, count: request.count, to_ms: request.to })
         break
       } catch (error) {
-        if (!(error instanceof Mt5RequestError) || !/4401/u.test(error.message) || this.now() > deadline) throw error
+        // 4401 = the series is still syncing in the terminal; MARKET_NOT_FOUND = the reader EA
+        // has not registered yet (terminal cold start). Both clear within the wait window.
+        if (!(error instanceof Mt5RequestError) || !/4401|MARKET_NOT_FOUND/u.test(error.message) || this.now() > deadline) throw error
         await delay(Mt5GatewayRuntime.HISTORY_RETRY_MS)
       }
     }
