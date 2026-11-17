@@ -1,0 +1,9 @@
+; mt5bridge.ini 部署样例 —— 复制到 <terminal_data>\MQL5\Libraries\mt5bridge.ini
+; 修改后需重启终端（DLL 只在 Runtime 创建时读一次）
+; ; 或 # 开头为注释
+
+gateway_host=127.0.0.1   ; 网关地址；跨机部署填网关机器 IP（DLL=client 主动拨号，终端免开入站端口）
+gateway_port=18850       ; 网关终端面端口，须与 gateway/gateway.ini 的 terminal_port 一致
+
+; 非空则 hello 首行携带 token，网关校验（与 gateway.ini 的 token 对齐）
+;token=change-me

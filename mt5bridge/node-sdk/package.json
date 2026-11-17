@@ -1,0 +1,22 @@
+{
+  "name": "mt5bridge",
+  "version": "0.1.1",
+  "description": "MT5Bridge SDK — run the terminal face inside your Node process: MT5 dials in, you get accounts, market data and trading.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "engines": { "node": ">=20" },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.8.0",
+    "vitest": "^4.1.0"
+  }
+}

@@ -1,0 +1,6 @@
+# mt5-bridge-panel's own profile layer: inserts the plugin entry into the loader tree.
+# The dsh.bundle.patch field of package.json points here; the plugin manager applies it
+# as a bundle layer after install.
+- insert:
+    - id: mt5-bridge-panel
+      name: mt5-bridge-panel

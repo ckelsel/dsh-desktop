@@ -1,0 +1,35 @@
+{
+  "name": "mt5-bridge-panel",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DSH plugin: the MT5 market page as an official global panel, with the terminal deploy wizard",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./deploy-engine.mjs": "./host/deploy-engine.mjs",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "host",
+    "assets"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-theme"
+      ],
+      "platform": "web"
+    }
+  }
+}

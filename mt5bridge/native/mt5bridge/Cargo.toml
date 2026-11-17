@@ -1,0 +1,18 @@
+[package]
+name = "mt5bridge"
+version = "0.2.0"
+edition = "2021"
+description = "MT5 Local Bridge native link: WebSocket JSON-RPC server inside the MT5 process"
+
+[lib]
+name = "mt5bridge"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+serde_json = "1"
+
+# 有意保持零异步依赖：std 线程模型（accept / 每连接读写 / 定时器），
+# 见 docs/ARCHITECTURE.md 依赖纪律。
+
+[profile.release]
+opt-level = 2

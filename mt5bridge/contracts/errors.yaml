@@ -1,0 +1,39 @@
+# 错误码全表（三层）
+# 1) JSON-RPC 标准层
+
+standard:
+  -32700: { name: PARSE_ERROR,          message: "invalid JSON" }
+  -32600: { name: INVALID_REQUEST,      message: "envelope missing id/method" }
+  -32601: { name: METHOD_NOT_FOUND,     message: "unknown method" }
+
+# 2) 桥层 -32000..-32099（DLL 产生，跨版本稳定）
+
+bridge:
+  -32000: { name: QUEUE_FULL,           message: "inbound component queue is full" }
+  -32001: { name: SERVICE_NOT_READY,    message: "service component not registered" }
+  -32002: { name: MARKET_NOT_FOUND,     message: "no market component for symbol" }
+  -32003: { name: REQUEST_TIMEOUT,      message: "request timed out; outcome unknown, do not retry trades" }
+  -32004: { name: INTERNAL,             message: "bridge internal error" }
+  -32005: { name: COMPONENT_OFFLINE,    message: "component heartbeat stale" }
+  -32006: { name: BAD_ENVELOPE,         message: "malformed envelope" }
+  -32007: { name: AMBIGUOUS_TARGET,     message: "selector required but ambiguous" }
+  -32008: { name: CLIENT_TOO_SLOW,      message: "reliable queue overflow, disconnecting" }
+
+# 3) MT5 业务层：MQL5 Handler 返回 result.error
+#    data 携带原始信息，code 用 -32050..-32099 之外的独立命名空间（字符串）
+
+mt5_business_example: |
+  { "jsonrpc": "2.0", "id": "c1-42",
+    "error": { "code": -32050, "message": "trade request rejected",
+               "data": { "name": "TRADE_REJECTED",
+                         "retcode": 10030,
+                         "retcode_description": "Invalid stops",
+                         "order": "11388458589" } } }
+
+mt5_business:
+  TRADE_REJECTED:      { code: -32050, note: "OrderSend/OrderCheck 服务器拒绝" }
+  SYMBOL_NOT_FOUND:    { code: -32051 }
+  NO_HISTORY:          { code: -32052 }
+  SUBSCRIPTION_NOT_FOUND: { code: -32053 }
+  HOST_CHART_PROTECTED:   { code: -32054 }
+  INVALID_PARAMS:      { code: -32055 }

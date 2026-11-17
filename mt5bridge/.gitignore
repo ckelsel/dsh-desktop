@@ -1,0 +1,17 @@
+# build artifacts
+**/target/
+**/node_modules/
+*.ex5
+*.dll
+*.log
+
+# local run scratch
+artifacts/
+svc.log
+
+# vendored sdk delivery tarballs
+node-sdk/*.tgz
+
+# deploy wizard bundled payload: real distribution artifacts, tracked on purpose
+!plugin/mt5-bridge-panel/assets/**
+!plugin/mt5-bridge-panel/lib/**

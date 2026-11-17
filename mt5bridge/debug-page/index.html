@@ -1,0 +1,399 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>MT5Bridge Debug</title>
+<style>
+  :root {
+    --bg: #101418; --panel: #171d24; --line: #232c36; --text: #cdd6e0; --dim: #7a8794;
+    --accent: #4da3ff; --ok: #3fb970; --warn: #e0a83c; --err: #e05c5c; --mono: Consolas, 'Courier New', monospace;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg); color: var(--text); font: 13px/1.5 -apple-system, 'Segoe UI', sans-serif; padding: 10px; }
+  header { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+  input, select, textarea, button {
+    background: #0d1116; border: 1px solid var(--line); color: var(--text);
+    border-radius: 4px; padding: 4px 8px; font: inherit;
+  }
+  input:focus, textarea:focus { outline: none; border-color: var(--accent); }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: #14314d; border-color: #1e4a75; }
+  button.danger { background: #45201f; border-color: #6e2f2d; }
+  button:disabled { opacity: .4; cursor: default; }
+  .badge { padding: 2px 10px; border-radius: 10px; font-size: 12px; background: var(--panel); border: 1px solid var(--line); }
+  .badge.on { color: var(--ok); border-color: var(--ok); }
+  .badge.off { color: var(--err); border-color: var(--err); }
+  #hello { color: var(--dim); font-size: 12px; flex: 1; min-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .grid { display: grid; grid-template-columns: 260px 1fr 300px; gap: 10px; height: calc(100vh - 90px); }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; display: flex; flex-direction: column; overflow: hidden; }
+  .panel h2 { font-size: 12px; font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: .08em;
+    padding: 8px 10px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; }
+  .panel .body { overflow-y: auto; padding: 8px 10px; flex: 1; }
+  #methods .m { padding: 3px 6px; border-radius: 3px; cursor: pointer; font-family: var(--mono); font-size: 12px; color: var(--accent); }
+  #methods .m:hover { background: #1d2733; }
+  #methods .group { color: var(--dim); font-size: 11px; margin-top: 8px; }
+  #runner { border-top: 1px solid var(--line); padding: 10px; display: none; }
+  #runner .url { font-family: var(--mono); color: var(--accent); word-break: break-all; }
+  #runner textarea { width: 100%; height: 70px; font-family: var(--mono); font-size: 12px; resize: vertical; margin: 6px 0; }
+  #runner pre { background: #0d1116; border: 1px solid var(--line); border-radius: 4px; padding: 8px;
+    font-family: var(--mono); font-size: 12px; white-space: pre-wrap; word-break: break-all; max-height: 180px; overflow-y: auto; }
+  #events .row { font-family: var(--mono); font-size: 12px; padding: 2px 4px; border-bottom: 1px solid #1a222b; display: flex; gap: 8px; }
+  #events .t { color: var(--dim); flex-shrink: 0; }
+  #events .seq { color: var(--warn); flex-shrink: 0; width: 52px; text-align: right; }
+  #events .seq.gap { color: var(--err); font-weight: bold; }
+  #events .name { color: var(--accent); flex-shrink: 0; }
+  #events .payload { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .card { border: 1px solid var(--line); border-radius: 4px; padding: 8px; margin-bottom: 8px; font-size: 12px; }
+  .card .title { color: var(--dim); margin-bottom: 4px; display: flex; justify-content: space-between; }
+  .kv { display: flex; justify-content: space-between; font-family: var(--mono); }
+  .kv b { color: #fff; font-weight: 500; }
+  .pos { border: 1px solid var(--line); border-radius: 4px; padding: 6px 8px; margin-bottom: 6px; font-family: var(--mono); font-size: 12px; }
+  .pos .head { display: flex; justify-content: space-between; margin-bottom: 4px; }
+  .pos .buy { color: var(--ok); } .pos .sell { color: var(--err); }
+  .rowbtns { display: flex; gap: 6px; margin: 4px 0; }
+  .rowbtns input { flex: 1; }
+  .hint { color: var(--dim); font-size: 11px; }
+  #gapbar { display: none; background: #45201f; color: #f0b9b9; padding: 6px 10px; border-radius: 4px; margin-bottom: 8px;
+    font-size: 12px; display: none; align-items: center; gap: 10px; }
+  .toolbar { display: flex; gap: 6px; }
+  .toolbar button { font-size: 11px; padding: 2px 8px; }
+</style>
+</head>
+<body>
+
+<header>
+  <input id="url" value="ws://127.0.0.1:18860" style="width:230px" spellcheck="false">
+  <input id="token" placeholder="token（可选）" style="width:120px" spellcheck="false">
+  <button id="connect" class="primary">连接</button>
+  <button id="disconnect" disabled>断开</button>
+  <span id="status" class="badge off">未连接</span>
+  <span id="hello"></span>
+  <span class="hint" id="stats"></span>
+</header>
+
+<div id="gapbar">
+  <span>⚠ seq 断档（事件被 conflation 丢弃）</span>
+  <button id="resync" class="primary" style="font-size:11px">system.resync 重建快照</button>
+</div>
+
+<div class="grid">
+  <div class="panel">
+    <h2>方法 <span class="hint" id="methodCount"></span></h2>
+    <div class="body" id="methods"><span class="hint">连接后从 system.capabilities 加载</span></div>
+    <div id="runner">
+      <div class="url" id="runMethod"></div>
+      <textarea id="runParams" spellcheck="false">{}</textarea>
+      <div class="rowbtns">
+        <button id="runSend" class="primary">调用</button>
+        <button id="runClose">收起</button>
+      </div>
+      <pre id="runResult"></pre>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>事件流
+      <span class="toolbar">
+        <input id="evtFilter" placeholder="过滤 method" style="width:110px;font-size:11px;padding:2px 6px">
+        <button id="evtPause">暂停</button>
+        <button id="evtClear">清空</button>
+      </span>
+    </h2>
+    <div class="body" id="events"></div>
+  </div>
+
+  <div class="panel">
+    <h2>状态</h2>
+    <div class="body">
+      <div class="card">
+        <div class="title"><span>账户</span><span class="hint" id="acctSrc"></span></div>
+        <div id="acct">—</div>
+      </div>
+      <div class="card">
+        <div class="title"><span>持仓</span><button class="toolbar" id="posRefresh" style="font-size:11px">刷新</button></div>
+        <div id="positions"><span class="hint">—</span></div>
+      </div>
+      <div class="card">
+        <div class="title"><span>订阅</span><button id="subRefresh" style="font-size:11px">刷新</button></div>
+        <div id="subs"><span class="hint">—</span></div>
+        <div class="rowbtns" style="margin-top:6px">
+          <input id="subSymbol" value="EURUSD" style="width:90px">
+          <button id="subAdd" class="primary">subscribe</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="title"><span>下单（demo）</span></div>
+        <div class="rowbtns">
+          <input id="tradeSymbol" value="EURUSD" style="width:80px">
+          <input id="tradeVol" value="0.01" style="width:60px">
+          <button id="tradeBuy" class="primary">buy</button>
+          <button id="tradeSell" class="danger">sell</button>
+        </div>
+        <div class="hint">走 trade.execute(OrderSendAsync)，事件流看终态</div>
+      </div>
+      <div class="card">
+        <div class="title"><span>行情快照</span></div>
+        <div class="rowbtns">
+          <input id="quoteSymbol" value="EURUSD" style="width:90px">
+          <button id="quoteBtn">market.quote</button>
+        </div>
+        <div id="quote" class="hint">—</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+const $ = s => document.querySelector(s);
+const wsUrl = () => {
+  const base = $('#url').value.trim();
+  const token = $('#token').value.trim();
+  return token ? base + '/?token=' + encodeURIComponent(token) : base;
+};
+
+let ws = null, nextId = 1;
+const pending = new Map();          // id → {resolve, reject, method, t0}
+let lastSeq = 0, paused = false, sent = 0, recv = 0;
+const gapNotified = new Set();      // 已提示断档的方法
+
+function setStatus(on, text) {
+  $('#status').textContent = text || (on ? '已连接' : '未连接');
+  $('#status').className = 'badge ' + (on ? 'on' : 'off');
+  $('#connect').disabled = on; $('#disconnect').disabled = !on;
+}
+
+function connect() {
+  try { ws && ws.close(); } catch {}
+  ws = new WebSocket(wsUrl());
+  // Chrome 对 file:// 页面的 ws:// 连接会静默挂起（无 onerror）——超时后给出提示
+  clearTimeout(connect._hint);
+  connect._hint = setTimeout(() => {
+    if (ws && ws.readyState === 0 && location.protocol === 'file:')
+      $('#hello').textContent = 'file:// 下 WebSocket 被浏览器挂起：在 debug-page 目录制 node serve.mjs，再访问 http://127.0.0.1:18999';
+  }, 4000);
+  ws.onopen = () => { clearTimeout(connect._hint); setStatus(true); lastSeq = 0; $('#gapbar').style.display = 'none'; };
+  ws.onclose = () => { setStatus(false, '连接关闭'); ws = null; };
+  ws.onerror = () => setStatus(false, '连接错误');
+  ws.onmessage = ev => {
+    recv++;
+    let m; try { m = JSON.parse(ev.data); } catch { return; }
+    if (m.method) return onEvent(m);
+    const p = pending.get(m.id);
+    if (p) { pending.delete(m.id); p.resolve(m); showResult(p.method, m, Date.now() - p.t0); }
+    updateStats();
+  };
+}
+
+function call(method, params = {}) {
+  if (!ws || ws.readyState !== 1) return Promise.reject(new Error('未连接'));
+  const id = 'dbg-' + nextId++;
+  sent++;
+  return new Promise((resolve, reject) => {
+    pending.set(id, { resolve, reject, method, t0: Date.now() });
+    ws.send(JSON.stringify({ jsonrpc: '2.0', id, method, params }));
+    setTimeout(() => { if (pending.has(id)) { pending.delete(id); reject(new Error('timeout')); } }, 30000);
+  });
+}
+
+function onEvent(m) {
+  if (m.method === 'bridge.hello') {
+    const p = m.params || {};
+    const who = p.role === 'GATEWAY' ? `${(p.terminals || []).length} terminal(s)` : (p.terminal_id || '');
+    $('#hello').textContent = `${p.role} · v${p.version} · ${who}`;
+    loadCapabilities(); refreshPositions(); refreshSubs();
+    call('account.get').then(r => r.result && renderAccount(r.result, 'RPC')).catch(() => {});
+    return;
+  }
+  // seq 断档检测（每连接单调；conflation 丢弃会跳号）
+  if (m.seq !== undefined) {
+    if (lastSeq && m.seq > lastSeq + 1) {
+      $('#gapbar').style.display = 'flex';
+      $('#gapbar span').textContent = `⚠ seq 断档 ${lastSeq} → ${m.seq}（${m.method} 旧值被覆盖丢弃）`;
+    }
+    lastSeq = Math.max(lastSeq, m.seq);
+  }
+  addEventRow(m);
+  routeEvent(m);
+}
+
+function addEventRow(m) {
+  if (paused) return;
+  const filter = $('#evtFilter').value.trim();
+  if (filter && !m.method.includes(filter)) return;
+  const row = document.createElement('div');
+  row.className = 'row';
+  const t = new Date().toLocaleTimeString('zh', { hour12: false });
+  const payload = m.params === undefined ? '' : JSON.stringify(m.params);
+  row.innerHTML = `<span class="t">${t}</span>` +
+    (m.seq !== undefined ? `<span class="seq">${m.seq}</span>` : '') +
+    `<span class="name">${m.method}</span><span class="payload" title=""></span>`;
+  row.querySelector('.payload').textContent = payload.length > 300 ? payload.slice(0, 300) + '…' : payload;
+  const box = $('#events');
+  box.prepend(row);
+  while (box.children.length > 500) box.lastChild.remove();
+}
+
+function routeEvent(m) {
+  if (m.method === 'event.account.changed' && m.params.account) renderAccount(m.params.account, '事件驱动');
+  if (m.method === 'event.position.changed') refreshPositions();
+  if (m.method === 'event.market.tick' && m.params.symbol === $('#quoteSymbol').value.trim())
+    renderQuote(m.params, 'tick');
+}
+
+async function loadCapabilities() {
+  try {
+    const r = await call('system.capabilities');
+    const list = (r.result && (r.result.service_methods || [])) || [];
+    $('#methodCount').textContent = list.length + ' methods';
+    const box = $('#methods'); box.innerHTML = '';
+    const groups = {};
+    for (const name of list) {
+      const g = name.split('.')[0];
+      (groups[g] = groups[g] || []).push(name);
+    }
+    for (const g of Object.keys(groups).sort()) {
+      const h = document.createElement('div'); h.className = 'group'; h.textContent = g; box.appendChild(h);
+      for (const name of groups[g]) {
+        const d = document.createElement('div'); d.className = 'm'; d.textContent = name;
+        d.onclick = () => openRunner(name);
+        box.appendChild(d);
+      }
+    }
+  } catch (e) { $('#methods').innerHTML = `<span class="hint">capabilities 失败: ${e.message}</span>`; }
+}
+
+const PARAM_HINTS = {
+  'market.quote': { symbol: 'EURUSD' },
+  'symbol.get': { symbol: 'EURUSD' },
+  'symbol.sessions': { symbol: 'EURUSD' },
+  'market.bars': { symbol: 'EURUSD', period: 'M1', count: 100 },
+  'market.ticks': { symbol: 'EURUSD', from_ms: 0, to_ms: 0 },
+  'position.close': { ticket: 0 },
+  'position.modify': { ticket: 0, sl: 0, tp: 0 },
+  'order.cancel': { ticket: 0 },
+  'history.orders': { from_ms: 0, to_ms: 0 },
+  'history.deals': { from_ms: 0, to_ms: 0 },
+  'trade.preview': { action: 'buy', symbol: 'EURUSD', volume: 0.01 },
+  'trade.execute': { action: 'buy', symbol: 'EURUSD', volume: 0.01 },
+  'trade.status': { request_id: 0 },
+  'market.subscribe': { symbol: 'EURUSD', period: 'M1' },
+  'market.unsubscribe': { symbol: 'EURUSD', period: 'M1' },
+  'market.book': { symbol: 'EURUSD' },
+};
+
+function openRunner(method) {
+  $('#runMethod').textContent = method;
+  $('#runParams').value = JSON.stringify(PARAM_HINTS[method] || {}, null, 1);
+  $('#runResult').textContent = '';
+  $('#runner').style.display = 'block';
+}
+
+async function runSend() {
+  const method = $('#runMethod').textContent;
+  let params;
+  try { params = JSON.parse($('#runParams').value || '{}'); }
+  catch (e) { $('#runResult').textContent = 'params JSON 无效: ' + e.message; return; }
+  $('#runResult').textContent = '…';
+  try {
+    const r = await call(method, params);
+    showResult(method, r, null);
+  } catch (e) { $('#runResult').textContent = '发送失败: ' + e.message; }
+}
+
+function showResult(method, r, ms) {
+  if ($('#runMethod').textContent !== method) return;    // 面板已切到别的方法
+  const head = ms !== null ? `// ${ms}ms\n` : '';
+  $('#runResult').textContent = head + JSON.stringify(r.result !== undefined ? r.result : r.error, null, 2);
+}
+
+function renderAccount(a, src) {
+  $('#acct').innerHTML =
+    `<div class="kv"><span>login</span><b>${a.login ?? '—'}</b></div>` +
+    `<div class="kv"><span>balance</span><b>${(+a.balance).toFixed(2)}</b></div>` +
+    `<div class="kv"><span>equity</span><b>${(+a.equity).toFixed(2)}</b></div>` +
+    `<div class="kv"><span>margin</span><b>${(+a.margin).toFixed(2)}</b></div>` +
+    `<div class="kv"><span>profit</span><b>${(+a.profit).toFixed(2)}</b></div>`;
+  $('#acctSrc').textContent = src;
+}
+
+function renderQuote(q, src) {
+  $('#quote').innerHTML =
+    `<div class="kv"><span>bid</span><b>${q.bid}</b></div>` +
+    `<div class="kv"><span>ask</span><b>${q.ask}</b></div>` +
+    `<div class="hint">${src} · ${new Date(q.time_msc).toLocaleTimeString('zh', { hour12: false })}</div>`;
+}
+
+async function refreshPositions() {
+  if (!ws) return;
+  try {
+    const r = await call('position.list');
+    const list = (r.result && r.result.positions) || [];
+    const box = $('#positions');
+    if (!list.length) { box.innerHTML = '<span class="hint">空仓</span>'; return; }
+    box.innerHTML = '';
+    for (const p of list) {
+      const d = document.createElement('div'); d.className = 'pos';
+      d.innerHTML = `<div class="head"><span class="${p.type}">${p.type.toUpperCase()} ${p.volume}</span>` +
+        `<span>${p.symbol} #${p.ticket}</span></div>` +
+        `<div class="kv"><span>open ${p.price_open} → ${p.price_current}</span><b>${(+p.profit).toFixed(2)}</b></div>`;
+      const btn = document.createElement('button');
+      btn.textContent = '平仓'; btn.className = 'danger'; btn.style.cssText = 'font-size:11px;padding:2px 8px;margin-top:4px';
+      btn.onclick = async () => {
+        if (!confirm(`平仓 #${p.ticket} ${p.symbol} ${p.volume}？`)) return;
+        const rr = await call('position.close', { ticket: Number(p.ticket) });
+        alert(JSON.stringify(rr.result || rr.error));
+      };
+      d.appendChild(btn);
+      box.appendChild(d);
+    }
+  } catch {}
+}
+
+async function refreshSubs() {
+  if (!ws) return;
+  try {
+    const r = await call('market.subscriptions');
+    const list = (r.result && r.result.subscriptions) || [];
+    const box = $('#subs');
+    if (!list.length) { box.innerHTML = '<span class="hint">无订阅</span>'; return; }
+    box.innerHTML = list.map(s =>
+      `<div class="kv"><span>${s.subscription_id}</span><span>refs=${s.refs}</span></div>`).join('');
+    box.querySelectorAll('.kv').forEach(el => el.style.cursor = 'default');
+  } catch {}
+}
+
+function updateStats() { $('#stats').textContent = `↑${sent} ↓${recv} seq=${lastSeq}`; }
+
+// —— 绑定 ——
+$('#connect').onclick = () => { connect(); setTimeout(loadCapabilities, 600); setTimeout(() => { refreshPositions(); refreshSubs(); }, 1200); };
+$('#disconnect').onclick = () => ws && ws.close();
+$('#resync').onclick = async () => { const r = await call('system.resync'); alert(JSON.stringify(r.result || r.error)); $('#gapbar').style.display = 'none'; };
+$('#runSend').onclick = runSend;
+$('#runClose').onclick = () => $('#runner').style.display = 'none';
+$('#evtPause').onclick = e => { paused = !paused; e.target.textContent = paused ? '继续' : '暂停'; };
+$('#evtClear').onclick = () => $('#events').innerHTML = '';
+$('#posRefresh').onclick = refreshPositions;
+$('#subRefresh').onclick = refreshSubs;
+$('#subAdd').onclick = async () => {
+  const r = await call('market.subscribe', { symbol: $('#subSymbol').value.trim(), period: 'M1' });
+  showResult('market.subscribe', r, null); refreshSubs();
+};
+$('#quoteBtn').onclick = async () => {
+  const r = await call('market.quote', { symbol: $('#quoteSymbol').value.trim() });
+  if (r.result) renderQuote(r.result, 'RPC'); else alert(JSON.stringify(r.error));
+};
+$('#tradeBuy').onclick = () => trade('buy');
+$('#tradeSell').onclick = () => trade('sell');
+// 本地调试工具：加载即按默认地址自动连接
+window.addEventListener('load', () => setTimeout(() => { if (!ws) connect(); }, 300));
+async function trade(action) {
+  const symbol = $('#tradeSymbol').value.trim(), volume = parseFloat($('#tradeVol').value);
+  if (!confirm(`demo ${action} ${volume} ${symbol}（OrderSendAsync）？`)) return;
+  const r = await call('trade.execute', { action, symbol, volume, deviation: 20, idempotency_key: 'dbg-' + Date.now().toString(36) });
+  alert(JSON.stringify(r.result || r.error));
+}
+</script>
+</body>
+</html>

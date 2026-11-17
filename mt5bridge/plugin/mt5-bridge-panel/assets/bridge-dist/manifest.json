@@ -1,0 +1,38 @@
+{
+  "version": "0.2.0",
+  "sdk_version": "0.1.1",
+  "commit": "defcfbc",
+  "generated_at": "2026-11-17T01:22:39.596Z",
+  "files": [
+    {
+      "path": "Libraries/mt5bridge.dll",
+      "name": "mt5bridge.dll",
+      "bytes": 411136,
+      "sha256": "76778eca98af64561738586ebf6e2a44cd2427485c8f1d8859fee0f26c43ebe0"
+    },
+    {
+      "path": "Services/BridgeService.ex5",
+      "name": "BridgeService.ex5",
+      "bytes": 187920,
+      "sha256": "6e449e12f76a63ce466501e1a631b2fedf37b8e31959aa303d6808ce99799858"
+    },
+    {
+      "path": "Experts/BridgeMarketEA.ex5",
+      "name": "BridgeMarketEA.ex5",
+      "bytes": 65830,
+      "sha256": "00e86c11f78ce858e7ff46fba838c03d619270c6769c41a49460b0c909092e01"
+    },
+    {
+      "path": "Templates/BridgeMarket.tpl",
+      "name": "BridgeMarket.tpl",
+      "bytes": 1116,
+      "sha256": "00261cbbd7217a2ebeb1070fc5a342f624d2609ec960d7ac59ea0519a50b9155"
+    },
+    {
+      "path": "Libraries/mt5bridge.ini",
+      "name": "mt5bridge.ini.example",
+      "bytes": 528,
+      "sha256": "041ff26c2d8ecb02c6875068a79d9f80f87c50f814f1e8662a7fc7dbdf5dfccc"
+    }
+  ]
+}

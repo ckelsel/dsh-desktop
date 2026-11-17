@@ -1,0 +1,6 @@
+; gateway.ini 部署样例 —— 复制到 gateway/gateway.ini，node gateway.mjs 读取
+; 环境变量优先：MT5_GATEWAY_TERMINAL_PORT / MT5_GATEWAY_CLIENT_PORT / MT5_GATEWAY_TOKEN
+
+terminal_port=18850   ; 终端面：MT5 DLL（client）连入，须与各终端 mt5bridge.ini 的 gateway_port 一致
+client_port=18860     ; SDK 面：dsh / 调试页 / 其他客户端连入
+;token=change-me      ; 非空时两端都要求 ?token=（终端面与 DLL 的 mt5bridge.ini token 对齐）

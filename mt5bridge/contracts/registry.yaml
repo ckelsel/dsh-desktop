@@ -1,0 +1,256 @@
+# MT5 Bridge 能力注册表（协议唯一源头）
+# 每个能力的可追踪链：method → target → handler → mt5_api → request/response
+# 纪律：代码与这里不一致 = bug；新增能力先改这里。
+
+version: 0.2.0
+
+defaults:
+  target: SERVICE          # 省略 target 默认 SERVICE（18850 端口）
+  semantics: sync          # sync | deferred | subscription
+  queue_class: reliable    # reliable | conflated（仅事件）
+
+# ─────────────────────────────────────────────
+# SERVICE 方法（全部由 BridgeService 执行）
+# ─────────────────────────────────────────────
+methods:
+  - method: system.status
+    handler: SystemHandler.Status
+    mt5_api: [TerminalInfoInteger, TerminalInfoString]
+    response: { bridge_version, role, terminal_id, uptime_ms, dll_status, trade_allowed }
+
+  - method: system.capabilities
+    handler: SystemHandler.Capabilities
+    mt5_api: []
+    response: { version, service_methods[], market_methods[], events[] }
+
+  - method: system.resync
+    handler: SystemHandler.Resync
+    mt5_api: []
+    response: { state: full, note: "客户端 seq 断档后调用，触发 Watcher 全量重推" }
+
+  - method: terminal.get
+    handler: SystemHandler.Terminal
+    mt5_api: [TerminalInfoInteger, TerminalInfoString]
+    response: { name, company, version, build, data_path, connected, trade_allowed, dlls_allowed }
+
+  - method: account.get
+    handler: AccountHandler.Get
+    mt5_api: [AccountInfoInteger, AccountInfoDouble, AccountInfoString]
+    response: { login, server, currency, leverage, balance, equity, margin, margin_free,
+                margin_level, profit, trade_allowed, algo_allowed, hedging }
+
+  - method: state.snapshot
+    handler: AccountHandler.StateSnapshot
+    mt5_api: [AccountInfoDouble, PositionsTotal, OrdersTotal, HistorySelect]
+    response: { account, positions[], orders[] }   # 全量状态（快照类仅此一个）
+
+  - method: symbol.list
+    handler: SymbolHandler.List
+    mt5_api: [SymbolsTotal, SymbolName]
+    request:  { view_only?: bool }                 # true=仅市场报价窗口可见
+    response: { symbols: [string] }
+
+  - method: symbol.get
+    handler: SymbolHandler.Get
+    mt5_api: [SymbolInfoInteger, SymbolInfoDouble, SymbolInfoString, SymbolSelect, OrderCalcMargin]
+    request:  { symbol }
+    response: { symbol, description, path, digits, point, tick_size, spread, trade_mode,
+                execution_mode, currency_base, currency_profit, currency_margin,
+                volume_min/max/step/limit, stops_level, freeze_level, contract_size,
+                calc_mode, sector, visible, order_modes[], margin_buy?, margin_sell?,
+                filling_mode, swap_long, swap_short }
+    notes: margin_* 依赖当前报价，无报价时为 null；order_modes 为能力数组
+           （market/limit/stop/stop_limit/sl/tp/close_by）
+
+  - method: symbol.sessions
+    handler: SymbolHandler.Sessions
+    mt5_api: [SymbolInfoSessionTrade, SymbolInfoSessionQuote]
+    request:  { symbol }
+    response: { trade: { mon..sun: [{from,to}] }, quote: {...} }
+
+  - method: market.quote
+    handler: MarketHandler.Quote
+    mt5_api: [SymbolInfoTick, SymbolInfoDouble]
+    request:  { symbol }
+    response: { symbol, bid, ask, last, time_msc, flags, volume, volume_real }
+
+  - method: market.bars
+    handler: MarketHandler.Bars
+    mt5_api: [CopyRates]
+    request:  { symbol, period: M1|...|MN1, count?: int, from_ms?: int, to_ms?: int }
+    response: { symbol, period, bars: [{time_msc, open, high, low, close, tick_volume, spread, real_volume}] }
+    notes: 三种取数模式——count 单独=最近 count 根；from_ms+to_ms=时间区间；
+           to_ms+count=to（排他）之前最近 count 根，双时间区间实现（CopyRates(first,last)
+           再截尾——CopyRates(start,count) 是从锚点向后取根，锚点被钳到回放前沿后必然
+           取 0 根报 4401）；锚点钳 TimeCurrent()：真实终端停盘/未来 to 收敛到最近一根；
+           回放 agent 的 TimeCurrent() 是模拟钟，墙钟 to 越过回放头也能取到已流过的根。
+           大区间 = slow；建议 count ≤ 5000 / 游标分页
+
+  - method: market.ticks
+    handler: MarketHandler.Ticks
+    mt5_api: [CopyTicksRange]
+    request:  { symbol, from_ms, to_ms, flags?: COPY_TICKS_* }
+    response: { symbol, ticks: [{time_msc, bid, ask, last, volume, flags}], truncated: bool }
+    slow: true
+    notes: 服务端强制窗口 ≤ 2h（实测 C6：无界请求阻塞分钟级）
+
+  - method: position.list
+    handler: PositionHandler.List
+    mt5_api: [PositionsTotal, PositionGetTicket, PositionGet*]
+    response: { positions: [{ticket, symbol, type: buy|sell, volume, price_open,
+                             price_current, sl, tp, profit, swap, time_msc, magic, comment}] }
+
+  - method: position.close
+    handler: PositionHandler.Close
+    mt5_api: [OrderSendAsync]
+    request:  { ticket, volume?: partial, deviation?: int, idempotency_key? }
+    response: { status: accepted, request_id }
+    semantics: deferred
+
+  - method: position.modify
+    handler: PositionHandler.Modify
+    mt5_api: [OrderSendAsync]
+    request:  { ticket, sl?, tp? }
+    response: { status: accepted, request_id }
+    semantics: deferred
+
+  - method: order.list
+    handler: OrderHandler.List
+    mt5_api: [OrdersTotal, OrderGetTicket, OrderGet*]
+    response: { orders: [{ticket, symbol, type, state, volume_initial, volume_current,
+                          price_open, sl, tp, time_setup_msc, time_done_msc, magic, comment}] }
+
+  - method: order.cancel
+    handler: OrderHandler.Cancel
+    mt5_api: [OrderSendAsync]
+    request:  { ticket }
+    response: { status: accepted, request_id }
+    semantics: deferred
+
+  - method: order.modify
+    handler: OrderHandler.Modify
+    mt5_api: [OrderSendAsync]
+    request:  { ticket, price?, sl?, tp? }
+    response: { status: accepted, request_id }
+    semantics: deferred
+
+  - method: history.orders
+    handler: HistoryHandler.Orders
+    mt5_api: [HistorySelect, HistoryOrderGetTicket, HistoryOrderGet*]
+    request:  { from_ms, to_ms, symbol? }
+    response: { orders: [...] }                    # 同 order.list 条目
+    slow: true
+
+  - method: history.deals
+    handler: HistoryHandler.Deals
+    mt5_api: [HistorySelect, HistoryDealGetTicket, HistoryDealGet*]
+    request:  { from_ms, to_ms, symbol? }
+    response: { deals: [{ticket, order, symbol, type, direction: in|out, volume,
+                         price, profit, commission, swap, time_msc, magic, comment}] }
+    slow: true
+
+  - method: trade.preview
+    handler: TradeHandler.Preview
+    mt5_api: [OrderCheck]
+    request:  { action: buy|sell|buy_limit|sell_limit|buy_stop|sell_stop, symbol, volume,
+                price?, sl?, tp?, deviation? }
+    response: { ok, retcode, comment, margin, margin_free, balance, equity }
+    notes: 挂单 action 的 price 必填（OrderCheck 按挂单请求校验）
+
+  - method: trade.execute
+    handler: TradeHandler.Execute
+    mt5_api: [OrderSendAsync]
+    request:  { action: buy|sell|buy_limit|sell_limit|buy_stop|sell_stop, symbol, volume,
+                price?, sl?, tp?, deviation?, idempotency_key?, comment? }
+    response: { status: accepted|rejected, request_id, retcode }
+    semantics: deferred
+    notes: 终态经 event.order/position/deal + trade.status；超时≠取消。
+           buy/sell=市价（price 可选覆盖）；*_limit/*_stop=挂单（price 必填，
+           映射 TRADE_ACTION_PENDING，等待穿越触发成交）
+
+  - method: trade.status
+    handler: TradeHandler.Status
+    mt5_api: [HistorySelect, HistoryOrderGet*]
+    request:  { request_id? , order? }
+    response: { found, order?, state?, deal?, profit? }
+
+  - method: market.subscribe
+    handler: SubscribeHandler.Subscribe
+    mt5_api: [ChartOpen, ChartApplyTemplate, ChartSetInteger]
+    request:  { symbol, period?: M1, events?: [tick, bar, bar_closed, book] }
+    response: { subscription_id, status: provisioning|ready, chart_created: bool }
+    semantics: subscription
+    notes: 订阅→Service 开隐藏图表挂 MarketEA；SDK 不感知图表
+
+  - method: market.unsubscribe
+    handler: SubscribeHandler.Unsubscribe
+    mt5_api: [ChartClose]
+    request:  { symbol, period? }
+    response: { closed: bool, remaining_refs: int }
+
+  - method: market.subscriptions
+    handler: SubscribeHandler.List
+    mt5_api: []
+    response: { subscriptions: [{subscription_id, symbol, period, events, refs, ready}] }
+
+# ─────────────────────────────────────────────
+# MARKET 方法（BridgeMarketEA 执行；单端口 18850，DLL 按 method 集合路由到 symbol 匹配的 EA 组件）
+# ─────────────────────────────────────────────
+market_methods:
+  - method: market.book
+    target: MARKET
+    handler: BookPublisher.Snapshot        # MarketEA 内 market.book 请求
+    mt5_api: [MarketBookGet]
+    request:  { symbol }
+    response: { symbol, entries: [{type, price, volume, volume_real}] }
+    notes: 仅对已订阅品种可用（实测 C4/C5）；EA 以 1s 周期轮询入站，快照延迟 ~1s
+
+# ─────────────────────────────────────────────
+# 事件（无 id；seq 由 DLL 注入）
+# ─────────────────────────────────────────────
+events:
+  - event: event.market.tick
+    source: MarketEA.OnTick → TickPublisher
+    queue_class: conflated                 # 同 symbol 覆盖旧值
+    params: { symbol, bid, ask, last, time_msc, volume, volume_real, flags,
+              day_open?, day_high?, day_low?, prev_close? }
+
+  - event: event.market.bar
+    source: MarketEA.OnTick → BarPublisher（当前K线）
+    queue_class: conflated                 # 同 symbol+period 覆盖
+    params: { symbol, period, timeframe, time_msc, open, high, low, close,
+              tick_volume, spread, real_volume, closed: false }
+
+  - event: event.market.bar_closed
+    source: MarketEA.OnTick → BarPublisher（收盘K线）
+    queue_class: reliable                  # 不可丢
+    params: { ...同上, closed: true }
+
+  - event: event.market.book
+    source: MarketEA.OnBookEvent → BookPublisher
+    queue_class: reliable
+    params: { symbol, entries: [{type, price, volume, volume_real}] }
+
+  - event: event.account.changed
+    source: Service.AccountWatcher（轮询对比）
+    params: { login?, balance, equity, margin, margin_free, profit, changed_fields }
+
+  - event: event.position.changed
+    source: Service.TradeWatcher
+    params: { kind: added|removed|modified, positions: [条目] }   # 增量条目
+
+  - event: event.order.changed
+    source: Service.TradeWatcher
+    params: { kind: added|removed|modified, orders: [条目] }
+
+  - event: event.deal.added
+    source: Service.TradeWatcher
+    params: { deals: [条目] }                                    # 同 history.deals 条目
+
+  - event: event.component
+    source: DLL（MARKET EA 注册/注销时广播）
+    params: { type: registered|unregistered, component_id, symbol }
+
+  - event: event.resync_required
+    source: DLL（慢客户端被断开前广播 / 重连后）
+    params: { reason: slow_client|reconnected }
