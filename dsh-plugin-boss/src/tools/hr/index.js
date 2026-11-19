@@ -1,15 +1,12 @@
 /**
  * hr_* tool registration: the recruiter surface as DSH tools.
  *
- * Read plane: whoami, jobs, candidates, recommendations, chat-list with
- * enrichment, chatmsg. Write plane (all behind the ask gate, all with a
- * dry_run preview the gate bypasses): greet, reply, send_location,
- * request_resume, accept_resume, exchange. Automation plane: lifecycle
- * control and training.
+ * Read plane: whoami, jobs, candidates, recommendations, conversations,
+ * last-message summaries, chatmsg and resumes. Write plane: direct recruiter
+ * HTTP operations behind the shared ask gate and dry_run preview.
  */
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { failure, jsonOutput, makeRegisterRead, ok } from '../shared.js'
-import { scoreConversation } from '../../boss/recruiter/automation.js'
 import * as chat from '../../boss/recruiter/chat.js'
 import * as conversations from '../../boss/recruiter/conversations.js'
 import * as jobs from '../../boss/recruiter/jobs.js'
@@ -26,17 +23,13 @@ const HR_WRITE_TOOLS = new Set([
  * @param {{
  *   baseClient: import('../../boss/client.js').BossClient,
  *   recruiter: import('../../boss/client.js').BossClient,
- *   automation: import('../../boss/recruiter/automation.js').RecruiterAutomation,
- *   session: import('../../boss/session.js').BossSession,
- *   limits?: {resumeMaxBytes?: number, batchSize?: number, enrichCap?: number},
+ *   limits?: {resumeMaxBytes?: number},
  * }} deps
  */
 export function registerHrTools(ctx, deps) {
-  const { baseClient, recruiter, automation } = deps
+  const { baseClient, recruiter } = deps
   const limits = {
     resumeMaxBytes: deps.limits?.resumeMaxBytes ?? 20 * 1024 * 1024,
-    batchSize: deps.limits?.batchSize ?? 50,
-    enrichCap: deps.limits?.enrichCap ?? 100,
   }
   const registerRead = makeRegisterRead(ctx, recruiter)
 
@@ -104,23 +97,22 @@ export function registerHrTools(ctx, deps) {
     })
 
   registerRead('boss_hr_chat',
-    'List recruiter conversation threads, optionally filtered, and enrich each with its last-message summary (batched, operator-visible cap).',
+    'List recruiter conversation threads, optionally filtered. This is the direct conversation-list API result; use boss_hr_last_messages for the separate last-message endpoint.',
     {
       page: { type: 'number', description: '1-based page, default 1.' },
       jobId: { type: 'string', description: 'Filter threads to one job.' },
       labelId: { type: 'number', description: '0 all / 1 new greetings / 2 in communication.' },
-      enrich: { type: 'boolean', description: 'Also fetch last-message summaries (default true).' },
     },
-    async (args) => {
-      const listing = await conversations.listConversations(recruiter, {
-        page: args.page, jobId: args.jobId, labelId: args.labelId,
-      })
-      if (args.enrich === false) return listing
-      const enrichment = await chat.batchEnrich(recruiter, listing.conversations, {
-        batchSize: limits.batchSize, cap: limits.enrichCap,
-      })
-      return { ...listing, enrichment: enrichment.enriched, report: enrichment.report }
-    })
+    (args) => conversations.listConversations(recruiter, {
+      page: args.page, jobId: args.jobId, labelId: args.labelId,
+    }))
+
+  registerRead('boss_hr_last_messages',
+    'Read the last-message summaries for comma-separated recruiter conversation ids through the direct userLastMsg API.',
+    {
+      friendIds: { type: 'string', description: 'Comma-separated conversation ids from boss_hr_chat.', required: true },
+    },
+    (args) => chat.lastMessageSummaries(recruiter, args.friendIds))
 
   registerRead('boss_hr_chatmsg',
     'Read chat history with one candidate (recruiter side), most recent first. Cursor-paged: pass maxMsgId from the previous page for older messages.',
@@ -360,65 +352,6 @@ export function registerHrTools(ctx, deps) {
       },
     }))
   }
-
-  // ---------------------------------------------------------- automation
-
-  registerRead('boss_hr_automation',
-    'Inspect or control the recruiter automation lifecycle: status (default), run (one scan-score-propose cycle; proposes actions for review, never sends — sending goes through the gated write tools), stop (persisted; blocks future cycles until cleared), resume (clears the stop flag). The stop flag governs automation only, never manual writes.',
-    {
-      action: { type: 'string', description: 'status | run | stop | resume, default status.' },
-      reason: { type: 'string', description: 'Why the cycle is being stopped.' },
-    },
-    async (args) => {
-      if (args.action === 'stop') return automation.stop(args.reason ?? 'operator')
-      if (args.action === 'resume') return automation.resume()
-      if (args.action === 'run') {
-        return automation.runCycle(async (progress) => {
-          // One propose-only cycle: scan the inbox, enrich, rank by urgency
-          // (unread recency), and surface suggestions for operator review.
-          const listing = await conversations.listConversations(recruiter, { labelId: 2 })
-          progress.scanned = listing.conversations.length
-          const enrichment = await chat.batchEnrich(recruiter, listing.conversations, {
-            batchSize: limits.batchSize, cap: limits.enrichCap,
-          })
-          const byId = new Map(enrichment.enriched.map((e) => [e.conversationId, e]))
-          const suggestions = listing.conversations
-            .map((c) => {
-              const extra = byId.get(c.conversationId)
-              const scored = scoreConversation(c, extra)
-              return {
-                friendId: c.conversationId,
-                peerName: c.peerName,
-                jobTitle: c.jobTitle,
-                unreadCount: c.unreadCount,
-                lastMessage: extra?.lastMessageSnippet ?? null,
-                lastMessageAt: extra?.lastMessageAt ?? c.lastActivityAt,
-                suggestedAction: c.unreadCount > 0 ? 'reply' : 'follow-up',
-                score: scored.score,
-                scoreReasons: scored.reasons,
-                review: scored.score >= automation.options.autoExecuteThreshold
-                  ? 'high'
-                  : scored.score >= automation.options.humanReviewThreshold ? 'review' : 'low',
-              }
-            })
-            .sort((a, b) => (b.unreadCount - a.unreadCount) || String(b.lastMessageAt ?? '').localeCompare(String(a.lastMessageAt ?? '')))
-            .slice(0, automation.options.maxActionsPerCycle)
-          progress.proposed = suggestions.length
-          automation.lastSuggestions = suggestions
-        })
-      }
-      const status = automation.status()
-      return { ...status, lastSuggestions: automation.lastSuggestions ?? [] }
-    })
-
-  registerRead('boss_hr_train',
-    'Fold reviewed history back into the automation scoring thresholds. Adjusts configuration only — automated sends still pass the ask gate.',
-    {
-      approved: { type: 'number', description: 'Count of approved actions at the ask gate.' },
-      rejected: { type: 'number', description: 'Count of rejected actions at the ask gate.' },
-      edited: { type: 'number', description: 'Count of edits made at the ask gate.' },
-    },
-    (args) => automation.train(args ?? {}))
 
   // Human gate for the hr write plane: ask approval unless dry-run.
   ctx.on('tools/pre-execute', async (exec, next) => {

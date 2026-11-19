@@ -11,9 +11,9 @@ BOSS 直聘插件 for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek
 - M3 桌面 webview 登录 + cookie 收割
 - M4 候选人侧推荐流/已投递/聊天 + 工具面 ✅
 - M5 候选人侧打招呼/投递（`tools/pre-execute` ask 门禁 + 去重账本 + dry-run）✅
-- HR-1 招聘者职位、候选人、收件箱、聊天记录、简历读取 ✅
+- HR-1 招聘者职位、候选人、收件箱、最近消息、聊天记录、简历读取 ✅
 - HR-2 招聘者打招呼、回复、发送职位、请求/接受简历、联系方式交换、约面试 ✅（全走 Node HTTP）
-- HR-3 招聘自动化扫描、排序、建议和训练 ✅；工作台页面后续接入
+- HR-3 当前只维护基础接口适配；候选人流程、自动化和工作台编排后续单独设计
 
 调研笔记见 `docs/study/`（接口清单、DSH 插件体系、桌面壳能力、生态速记）。
 
@@ -32,7 +32,8 @@ BOSS 直聘插件 for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek
 | `boss_hr_jobs` | 招聘职位列表和单个职位详情 |
 | `boss_hr_candidates` | 招聘者候选人池搜索 |
 | `boss_hr_candidate` | 读取单个候选人卡片 |
-| `boss_hr_chat` | 招聘收件箱和最近消息增强 |
+| `boss_hr_chat` | 招聘收件箱会话列表 |
+| `boss_hr_last_messages` | 按会话 id 读取最近消息摘要 |
 | `boss_hr_chatmsg` | 招聘聊天记录及游标翻页 |
 | `boss_hr_view_resume` / `boss_hr_download_resume` | 查看和受限下载候选人简历 |
 | `boss_hr_greet` / `boss_hr_reply` | 首次打招呼和会话回复 |
@@ -40,7 +41,6 @@ BOSS 直聘插件 for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek
 | `boss_hr_request_resume` / `boss_hr_accept_resume` | 请求和接受候选人简历 |
 | `boss_hr_exchange` / `boss_hr_interview` | 交换联系方式和发起面试邀请 |
 | `boss_hr_job_online` / `boss_hr_job_offline` | 上线或下线招聘职位 |
-| `boss_hr_automation` / `boss_hr_train` | 自动化扫描建议、停止/恢复和训练 |
 
 招聘端写操作统一经过 `tools/pre-execute` 人工审批；`dry_run=true` 只生成请求预览，不访问平台。平台写请求禁止自动重试，网络结果未知时要求先人工核对。
 

@@ -16,12 +16,9 @@ import { join } from 'node:path'
 import { createRequire } from 'node:module'
 
 import { BossClient } from './boss/client.js'
-import { ConsoleData } from './boss/console-data.js'
 import { RECRUITER_ENDPOINTS } from './boss/endpoints.js'
-import { accountFingerprint, BossLedger, ledgerFileFor } from './boss/ledger.js'
 import { BossSession } from './boss/session.js'
 import { RequestThrottle, RiskLock } from './boss/throttle.js'
-import { RecruiterAutomation } from './boss/recruiter/automation.js'
 import { registerBossTools } from './tools/index.js'
 import { registerHrTools } from './tools/hr/index.js'
 
@@ -70,14 +67,6 @@ if (Schema && typeof Schema.object === 'function') {
     resumeMaxBytes: Schema.number()
       .description('Size ceiling in bytes for recruiter resume attachment downloads; oversize is refused, never truncated.')
       .default(20 * 1024 * 1024)
-      .volatile(),
-    hrBatchSize: Schema.number()
-      .description('Conversation count per last-message enrichment batch (recruiter chat).')
-      .default(50)
-      .volatile(),
-    hrEnrichCap: Schema.number()
-      .description('Maximum conversations enriched per boss_hr_chat call; the report names the cap.')
-      .default(100)
       .volatile(),
   })
 }
@@ -141,28 +130,12 @@ export function apply(ctx, config) {
       session.markStokenStale(reason)
     },
   })
-  const automation = new RecruiterAutomation(join(dataDir, 'automation-state.json'), { logger: ctx.logger })
-  // Panel-only extras layered on the shared substrate: the recruiter client
-  // (console reads) and the enrichment limits (same config the hr tools use).
-  // Business tool wiring above stays untouched.
-  const panelDeps = {
-    ...deps,
-    recruiter,
-    consoleLimits: {
-      batchSize: readConfig(config, 'hrBatchSize', 50),
-      enrichCap: readConfig(config, 'hrEnrichCap', 100),
-    },
-  }
   if (role !== 'candidate') {
     registerHrTools(ctx, {
       baseClient: client,
       recruiter,
-      automation,
-      session,
       limits: {
         resumeMaxBytes: readConfig(config, 'resumeMaxBytes', 20 * 1024 * 1024),
-        batchSize: readConfig(config, 'hrBatchSize', 50),
-        enrichCap: readConfig(config, 'hrEnrichCap', 100),
       },
     })
   }
@@ -176,10 +149,10 @@ export function apply(ctx, config) {
     if (typeof ctx.inject === 'function') {
       ctx.inject(['webServer'], (scope) => {
         const webServer = scope?.webServer
-        if (webServer?.register) registerPanelRoutes(ctx, webServer, panelDeps)
+        if (webServer?.register) registerPanelRoutes(ctx, webServer, deps)
       })
     } else if (ctx.webServer?.register) {
-      registerPanelRoutes(ctx, ctx.webServer, panelDeps)
+      registerPanelRoutes(ctx, ctx.webServer, deps)
     }
   } catch (error) {
     ctx.logger.info?.(`dsh-plugin-boss: no web server, panel disabled (${error?.message ?? error})`)
@@ -219,18 +192,9 @@ function asDelayPair(value) {
  * the webServer binds 127.0.0.1.
  * @param {import('@deepseek-ai/cordis').Context} ctx
  * @param {{register: (route: any) => () => void}} webServer
- * @param {{session: BossSession, client: BossClient, recruiter: BossClient, riskLock: RiskLock, dataDir: string, consoleLimits: {batchSize: number, enrichCap: number}}} deps
+ * @param {{session: BossSession, riskLock: RiskLock}} deps
  */
 function registerPanelRoutes(ctx, webServer, deps) {
-  // Console data source: one instance so the network half is cached and
-  // single-flighted across panel polls (throttle-friendly).
-  const consoleData = new ConsoleData({
-    session: deps.session,
-    recruiter: deps.recruiter,
-    riskLock: deps.riskLock,
-    dataDir: deps.dataDir,
-    limits: deps.consoleLimits,
-  })
   const dispose = webServer.register({
     kind: 'prefix',
     path: '/boss-plugin',
@@ -281,32 +245,6 @@ function registerPanelRoutes(ctx, webServer, deps) {
           })
           return
         }
-        if (route === '/console' && req.method === 'GET') {
-          // Aggregated resume-pipeline dataset (P0 read-only console). The
-          // network half passes the shared read throttle (30–60s pacing by
-          // default), so a cold build can take minutes; snapshot() caches
-          // and single-flights to keep polling cheap.
-          consoleData.snapshot().then(
-            (dataset) => json(200, dataset),
-            (error) => json(500, { error: String(error?.message ?? error) }),
-          )
-          return
-        }
-        if (route === '/console/resume-request' && req.method === 'POST') {
-          // Lane ② manual local marking — the only write P0 allows. Touches
-          // the ledger file only; never the platform, never the throttle.
-          const chunks = []
-          req.on('data', (chunk) => chunks.push(chunk))
-          req.on('end', () => {
-            try {
-              const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
-              json(200, applyResumeRequestMarking(deps, body))
-            } catch (error) {
-              json(400, { ok: false, message: String(error?.message ?? error) })
-            }
-          })
-          return
-        }
         json(404, { error: `unknown route ${route}` })
       } catch (error) {
         json(500, { error: String(error?.message ?? error) })
@@ -314,55 +252,4 @@ function registerPanelRoutes(ctx, webServer, deps) {
     },
   })
   ctx.effect(() => () => dispose())
-}
-
-/**
- * Validate and apply one local resume-request marking (console lane ②)
- * against the account-scoped ledger. Ledger write only — no platform send,
- * no throttle, no risk-lock involvement.
- * @param {{session: BossSession, dataDir: string}} deps
- * @param {any} body parsed request body:
- *   {action: 'mark-requested' | 'mark-arrived' | 'cancel', friendId, peerName?, jobId?, jobTitle?, securityId?, note?}
- * @returns {{ok: boolean, message?: string, action?: string, record?: any}}
- */
-function applyResumeRequestMarking(deps, body) {
-  const action = body?.action
-  const friendId = body?.friendId === undefined || body?.friendId === null ? '' : String(body.friendId).trim()
-  if (action !== 'mark-requested' && action !== 'mark-arrived' && action !== 'cancel') {
-    return { ok: false, message: 'action 必须是 mark-requested / mark-arrived / cancel 之一。' }
-  }
-  if (!friendId) {
-    return { ok: false, message: '缺少 friendId（会话 id，来自 console 数据的泳道条目）。' }
-  }
-  const wt2 = deps.session.cookies().wt2
-  if (!wt2) {
-    return { ok: false, message: '未登录（缺少 wt2）；先完成登录再做本地标记。' }
-  }
-  const ledger = new BossLedger(ledgerFileFor(deps.dataDir), accountFingerprint(wt2))
-  if (action === 'mark-requested') {
-    const record = ledger.markResumeRequested({
-      friendId,
-      peerName: optionalText(body.peerName),
-      jobId: optionalText(body.jobId),
-      jobTitle: optionalText(body.jobTitle),
-      securityId: optionalText(body.securityId),
-      note: optionalText(body.note),
-    })
-    return { ok: true, action, record }
-  }
-  if (action === 'mark-arrived') {
-    const record = ledger.markResumeArrived(friendId)
-    if (!record) return { ok: false, message: `会话 ${friendId} 没有「待收简历」的标记；先执行 mark-requested。` }
-    return { ok: true, action, record }
-  }
-  const record = ledger.cancelResumeRequest(friendId)
-  if (!record) return { ok: false, message: `会话 ${friendId} 没有可取消的简历标记。` }
-  return { ok: true, action, record }
-}
-
-/** Undefined for null/missing/blank values, so the ledger stores no empty labels. */
-function optionalText(value) {
-  if (value === undefined || value === null) return undefined
-  const text = String(value).trim()
-  return text === '' ? undefined : text
 }

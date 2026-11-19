@@ -1,7 +1,7 @@
 /**
  * Per-conversation recruiter operations on an opened thread: reading history,
- * batched list enrichment, and every recruiter-side write (greeting, reply,
- * location card, resume view/request/accept/download, contact exchange).
+ * last-message summaries, and every recruiter-side HTTP operation (greeting,
+ * reply, location card, resume view/request/accept/download, contact exchange).
  *
  * Every write participates in the plugin write gate (tools/pre-execute ask);
  * nothing here sends on its own. The known boss-agent-cli HTTP paths are
@@ -9,9 +9,6 @@
  * instead of being approximated with page automation.
  */
 import { BossError } from '../errors.js'
-
-/** Enrichment tuning defaults (config layer; capability contracts stay numeric-free). */
-export const DEFAULT_ENRICH_OPTIONS = Object.freeze({ batchSize: 50, cap: 100 })
 
 /**
  * Read the message history of a conversation, oldest to newest. Cursor-based
@@ -42,47 +39,29 @@ export async function lastMessages(recruiter, handle, options = {}) {
 }
 
 /**
- * Enrich a conversation list with last-message summaries, in serial batches,
- * stopping at an operator-visible cap and reporting enriched vs skipped.
+ * Read the platform's last-message summaries for an explicit id list.
+ * The caller owns paging, batching and any later business interpretation.
  * @param {import('../client.js').BossClient} recruiter
- * @param {{conversationId: string}[]} conversations
- * @param {{batchSize?: number, cap?: number}} [options]
+ * @param {string | string[]} friendIds comma-separated ids or an id array
  */
-export async function batchEnrich(recruiter, conversations, options = {}) {
-  const batchSize = options.batchSize ?? DEFAULT_ENRICH_OPTIONS.batchSize
-  const cap = options.cap ?? DEFAULT_ENRICH_OPTIONS.cap
-  const targets = conversations.slice(0, cap)
-  const enriched = []
-  let failedBatch = null
-  for (let offset = 0; offset < targets.length; offset += batchSize) {
-    const chunk = targets.slice(offset, offset + batchSize)
-    try {
-      const zpData = await recruiter.call('lastMessages', {
-        form: { friendIds: chunk.map((c) => c.conversationId).join(','), src: 0 },
-      })
-      const rows = Array.isArray(zpData?.result) ? zpData.result : []
-      for (const row of rows) {
-        enriched.push({
-          conversationId: String(row.uid ?? row.friendId ?? row.friendUid ?? ''),
-          lastMessageSnippet: snippetOf(row),
-          lastMessageSender: row.source === 1 ? 'recruiter' : 'candidate',
-          lastMessageAt: row.lastTS ?? row.updateTime ?? undefined,
-        })
-      }
-    } catch (error) {
-      // A refused batch stops the read instead of hammering; report partial.
-      failedBatch = { at: offset, error: String(error?.message ?? error) }
-      break
-    }
-  }
+export async function lastMessageSummaries(recruiter, friendIds) {
+  const ids = Array.isArray(friendIds)
+    ? friendIds.map((id) => String(id).trim()).filter(Boolean)
+    : String(friendIds ?? '').split(',').map((id) => id.trim()).filter(Boolean)
+  if (ids.length === 0) throw new BossError('args', '读取最近消息需要至少一个 friendId。')
+  const zpData = await recruiter.call('lastMessages', {
+    form: { friendIds: ids.join(','), src: 0 },
+  })
+  const rows = Array.isArray(zpData?.result) ? zpData.result : []
   return {
-    enriched,
-    report: {
-      enriched: enriched.length,
-      skipped: conversations.length - targets.length,
-      capped: conversations.length > targets.length,
-      failedBatch,
-    },
+    messages: rows.map((row) => ({
+      conversationId: String(row.uid ?? row.friendId ?? row.friendUid ?? ''),
+      lastMessageSnippet: snippetOf(row),
+      lastMessageSender: row.source === 1 ? 'recruiter' : 'candidate',
+      lastMessageAt: row.lastTS ?? row.updateTime ?? undefined,
+      raw: row,
+    })),
+    raw: zpData,
   }
 }
 

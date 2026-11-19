@@ -1,11 +1,8 @@
 /**
  * Greet/apply deduplication ledger (boss-agent-cli's SQLite greet_records /
- * apply_records, JSON edition), extended with the console pipeline's
- * resume-request marking. Greets/applies: one record per account fingerprint
- * + job + securityId, so a repeated greet on the same job is short-circuited
- * before any request leaves the host. ResumeRequests: one open marking per
- * account + conversation, purely a local record of operator intent — it
- * never triggers a platform send.
+ * apply_records, JSON edition). One record per account fingerprint + job +
+ * securityId, so a repeated action is short-circuited before a request leaves
+ * the host.
  *
  * Atomic tmp+rename writes; corruption starts a fresh ledger rather than
  * blocking sends (a lost dedup entry only risks a duplicate greeting, never
@@ -36,8 +33,8 @@ export class BossLedger {
   #file
   /** @type {string} */
   #account
-  /** @type {{greets: LedgerRecord[], applies: LedgerRecord[], resumeRequests: ResumeRequestRecord[]}} */
-  #data = { greets: [], applies: [], resumeRequests: [] }
+  /** @type {{greets: LedgerRecord[], applies: LedgerRecord[]}} */
+  #data = { greets: [], applies: [] }
   #loaded = false
 
   /**
@@ -60,19 +57,9 @@ export class BossLedger {
   }
 
   /**
-   * Identity key for a resume-request marking: one open marking per account
-   * and conversation, independent of the greet key space.
-   * @param {string} friendId conversation/friend id from the inbox
-   * @returns {string} marking key
-   */
-  resumeRequestKey(friendId) {
-    return `${this.#account}:resume:${friendId}`
-  }
-
-  /**
    * @param {LedgerKind} kind
    * @param {string} key
-   * @returns {LedgerRecord | ResumeRequestRecord | undefined}
+   * @returns {LedgerRecord | undefined}
    */
   find(kind, key) {
     this.#load()
@@ -80,10 +67,9 @@ export class BossLedger {
   }
 
   /**
-   * Append a record (newest first). Generic across kinds; resume-request
-   * markings should use the semantic helpers below instead.
+   * Append a record (newest first).
    * @param {LedgerKind} kind
-   * @param {LedgerRecord | ResumeRequestRecord} entry key/at plus outcome fields
+   * @param {LedgerRecord} entry key/at plus outcome fields
    */
   record(kind, entry) {
     this.#load()
@@ -95,100 +81,11 @@ export class BossLedger {
   /**
    * @param {LedgerKind} kind
    * @param {number} [limit]
-   * @returns {(LedgerRecord | ResumeRequestRecord)[]}
+   * @returns {LedgerRecord[]}
    */
   list(kind, limit = 50) {
     this.#load()
     return this.#data[kind].slice(0, limit)
-  }
-
-  // ------------------------------------------------- resume-request marking
-
-  /**
-   * Mark (or re-mark) a conversation as resume-requested. Local operator
-   * marking only — records intent, never a platform send. Upsert by key: an
-   * open (non-cancelled) marking is refreshed in place instead of stacking a
-   * duplicate, and re-marking resets the clock because the operator
-   * re-anchored the request time.
-   * @param {{friendId: string, peerName?: string, jobId?: string, jobTitle?: string, securityId?: string, note?: string}} entry
-   * @returns {ResumeRequestRecord}
-   */
-  markResumeRequested(entry) {
-    this.#load()
-    const base = {
-      peerName: entry.peerName,
-      jobId: entry.jobId,
-      jobTitle: entry.jobTitle,
-      securityId: entry.securityId,
-      note: entry.note,
-      key: this.resumeRequestKey(entry.friendId),
-      friendId: entry.friendId,
-      at: new Date().toISOString(),
-      outcome: 'requested',
-      account: this.#account,
-    }
-    const open = this.#data.resumeRequests.find((r) => r.key === base.key && r.outcome !== 'cancelled')
-    let record
-    if (open) {
-      // Merge over the open marking so a re-mark keeps its position/history
-      // entry while updating labels and the request timestamp. Arrival and
-      // cancellation stamps from a previous lifecycle are cleared: the
-      // marking is open again.
-      Object.assign(open, base)
-      delete open.arrivedAt
-      delete open.cancelledAt
-      record = open
-    } else {
-      record = base
-      this.#data.resumeRequests.unshift(record)
-      if (this.#data.resumeRequests.length > MAX_RECORDS) this.#data.resumeRequests.length = MAX_RECORDS
-    }
-    this.#flush()
-    return record
-  }
-
-  /**
-   * Mark an open request as arrived (the resume landed). Strict: requires a
-   * prior open 'requested' marking, so arrival bookkeeping never invents a
-   * request the operator never recorded.
-   * @param {string} friendId conversation/friend id used at mark time
-   * @returns {ResumeRequestRecord | undefined} undefined when no open marking exists
-   */
-  markResumeArrived(friendId) {
-    this.#load()
-    const record = this.#openRequest(friendId)
-    if (!record) return undefined
-    record.outcome = 'arrived'
-    record.arrivedAt = new Date().toISOString()
-    this.#flush()
-    return record
-  }
-
-  /**
-   * Cancel a marking (mis-mark, or the thread is dead). Works on 'requested'
-   * and 'arrived' alike; cancelled records stay in the file as history and
-   * are excluded from every live lane.
-   * @param {string} friendId
-   * @returns {ResumeRequestRecord | undefined} undefined when there is nothing to cancel
-   */
-  cancelResumeRequest(friendId) {
-    this.#load()
-    const key = this.resumeRequestKey(friendId)
-    const record = this.#data.resumeRequests.find((r) => r.key === key && r.outcome !== 'cancelled')
-    if (!record) return undefined
-    record.outcome = 'cancelled'
-    record.cancelledAt = new Date().toISOString()
-    this.#flush()
-    return record
-  }
-
-  /**
-   * @param {string} friendId
-   * @returns {ResumeRequestRecord | undefined}
-   */
-  #openRequest(friendId) {
-    const key = this.resumeRequestKey(friendId)
-    return this.#data.resumeRequests.find((r) => r.key === key && r.outcome === 'requested')
   }
 
   // ------------------------------------------------------------------- io
@@ -200,17 +97,14 @@ export class BossLedger {
       if (existsSync(this.#file)) {
         const parsed = JSON.parse(readFileSync(this.#file, 'utf8'))
         if (parsed && Array.isArray(parsed.greets) && Array.isArray(parsed.applies)) {
-          // Older files predate the resumeRequests kind; a missing or malformed
-          // array starts empty rather than rejecting the whole ledger.
           this.#data = {
             greets: parsed.greets,
             applies: parsed.applies,
-            resumeRequests: Array.isArray(parsed.resumeRequests) ? parsed.resumeRequests : [],
           }
         }
       }
     } catch {
-      this.#data = { greets: [], applies: [], resumeRequests: [] }
+      this.#data = { greets: [], applies: [] }
     }
   }
 
@@ -230,17 +124,8 @@ export function accountFingerprint(wt2) {
   return createHash('sha256').update(wt2).digest('hex').slice(0, 16)
 }
 
-/** @typedef {'greets' | 'applies' | 'resumeRequests'} LedgerKind */
+/** @typedef {'greets' | 'applies'} LedgerKind */
 
 /**
  * @typedef {{key: string, at: string, jobId: string, securityId: string, jobName?: string, brandName?: string, outcome: string, platformMessage?: string}} LedgerRecord
- */
-
-/**
- * @typedef {{
- *   key: string, at: string, friendId: string,
- *   peerName?: string, jobId?: string, jobTitle?: string, securityId?: string, note?: string,
- *   outcome: 'requested' | 'arrived' | 'cancelled',
- *   arrivedAt?: string, cancelledAt?: string, account?: string,
- * }} ResumeRequestRecord
  */
