@@ -1,0 +1,9 @@
+# dsh-plugin-boss bundle patch.
+#
+# HOST-PLANE plugin: it registers agent tools (boss_*) on the host `tools`
+# registry and serves its client API over a webServer route. The client half
+# contributes a login panel and tool cards. Never compose this row into an
+# agent preset.
+- insert:
+    - id: dsh-plugin-boss
+      name: dsh-plugin-boss
